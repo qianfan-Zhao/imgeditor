@@ -230,7 +230,24 @@ static int gpt_detect(void *private_data, int force_type, int fd)
 		return ret;
 
 	if ((size_t)ret != partition_entries_sz) {
-		fprintf_if_force_type("Error: read whole partitons failed\n");
+		uint32_t entry_lba = le32_to_cpu(p->hdr.partition_entry_lba);
+		uint64_t minimum_sz;
+		char smart_sz[64];
+
+		minimum_sz = lba2sz((uint64_t)entry_lba) + partition_entries_sz;
+		smart_format_size(minimum_sz, smart_sz, sizeof(smart_sz));
+
+		fprintf_if_force_type("Error: read whole partitons failed\n"
+				      "       partition_entry_lba = %d\n"
+				      "       num_partition_entries = %d\n"
+				      "       sizeof_partition_entry = %d\n",
+				      entry_lba,
+				      p->num_partition_entries,
+				      le32_to_cpu(p->hdr.sizeof_partition_entry)
+				      );
+		fprintf_if_force_type("The minimum size should be: "
+				      "%" PRIu64 " Bytes (%s)\n",
+				      minimum_sz, smart_sz);
 		return -1;
 	}
 

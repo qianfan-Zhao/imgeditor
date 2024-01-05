@@ -23,6 +23,8 @@
 #define SIZEMASK_MB				(SIZE_MB(1) - 1)
 #define SIZEMASK_GB				(SIZE_GB(1) - 1)
 
+const char *smart_format_size(uint64_t sz, char *buf, size_t bufsz);
+
 #define le16_to_cpu(x)				le16toh(x)
 #define be16_to_cpu(x)				be16toh(x)
 #define le32_to_cpu(x)				le32toh(x)

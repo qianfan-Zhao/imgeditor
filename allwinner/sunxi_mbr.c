@@ -75,25 +75,7 @@ static uint64_t make_uint64(uint32_t msb, uint32_t lsb)
 
 static const char *smart_size(uint64_t sector_addr, char *buf, size_t bufsz)
 {
-	uint64_t addr, byte_addr = sector_addr * SECTOR_SIZE;
-	const char *units;
-
-	if (byte_addr <= SIZE_KB(1) || (byte_addr & SIZEMASK_KB)) {
-		addr = byte_addr;
-		units = "B  ";
-	} else if (byte_addr & SIZEMASK_MB) {
-		addr = byte_addr / SIZE_KB(1);
-		units = "KiB";
-	} else if (byte_addr & SIZEMASK_GB) {
-		addr = byte_addr / SIZE_MB(1);
-		units = "MiB";
-	} else {
-		addr = byte_addr / SIZE_GB(1);
-		units = "GiB";
-	}
-
-	snprintf(buf, bufsz, "%" PRIu64 "%s", addr, units);
-	return buf;
+	return smart_format_size(sector_addr * SECTOR_SIZE, buf, bufsz);
 }
 
 static void structure_sunxi_mbr_partition_print_addr(const char *print_name_fmt,
