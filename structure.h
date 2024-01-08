@@ -8,6 +8,8 @@
 #include <stddef.h>
 #include <cJSON.h>
 
+#define STRUCTURE_FLAG_NOT_SAVE			(1 << 0)
+
 struct structure_item {
 	const char	*name;
 	size_t		offset;
@@ -18,6 +20,7 @@ struct structure_item {
 				     const void *addr, size_t sz);
 	int		(*load_json)(cJSON *json, const char *name,
 				     void *addr, size_t sz);
+	unsigned int	flags;
 };
 
 #define STRUCTURE_ITEM(_type, _name, _print, ...) {			\

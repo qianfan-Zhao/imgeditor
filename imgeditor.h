@@ -16,6 +16,8 @@
 #include "list_head.h"
 #include "json_helper.h"
 
+int get_verbose_level(void);
+
 #define SIZE_KB(x)				((x) << 10)
 #define SIZE_MB(x)				((x) << 20)
 #define SIZE_GB(x)				((x) << 30)

@@ -486,6 +486,31 @@ void structure_item_print_string(const char *print_name_fmt, const char *name,
 	printf("\n");
 }
 
+int structure_item_load_json_string(cJSON *json, const char *name,
+				    void *addr, size_t sz)
+{
+	const char *s = json_get_string_value_in_object(json, name);
+
+	if (!s)
+		return -1;
+
+	snprintf(addr, sz, "%s", s);
+	return 0;
+}
+
+int structure_item_save_json_string(cJSON *json, const char *name,
+				    const void *addr, size_t sz)
+{
+	char tmps[sz + 1];
+
+	/* make sure the buffer is ending with '\0' */
+	memcpy(tmps, addr, sz);
+	tmps[sz] = '\0';
+
+	json_create_or_update_string_value(json, name, tmps);
+	return 0;
+}
+
 void structure_item_print_unix_epoch(const char *print_name_fmt, const char *name,
 				     const void *addr, size_t sz)
 {
@@ -527,6 +552,7 @@ struct structure_item_type {
 }
 
 static const struct structure_item_type available_types[] = {
+	STRUCTURE_ITEM_TYPE(string),
 	STRUCTURE_ITEM_TYPE(unsigned),
 	STRUCTURE_ITEM_TYPE(be_unsigned),
 	STRUCTURE_ITEM_TYPE(xunsigned),
@@ -559,6 +585,9 @@ int structure_save_json(cJSON *json, const void *base,
 		save_json_t save = item->save_json;
 		int ret;
 
+		if (item->flags & STRUCTURE_FLAG_NOT_SAVE)
+			continue;
+
 		if (!save) { /* auto detect the save functions */
 			const struct structure_item_type *t =
 					get_structure_item_type(item->print);
@@ -590,6 +619,9 @@ int structure_load_json(cJSON *json, void *base,
 	for (const struct structure_item *item = items; item->name; item++) {
 		load_json_t load = item->load_json;
 		int ret;
+
+		if (item->flags & STRUCTURE_FLAG_NOT_SAVE)
+			continue;
 
 		if (!load) {
 			/* auto detect the load functions */

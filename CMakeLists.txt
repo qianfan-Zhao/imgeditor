@@ -47,7 +47,10 @@ option(ENABLE_TIMEZONE          "Enable timezone tzfile"                ON)
 option(ENABLE_UBOOT             "Enable U-Boot images"                  ON)
 
 if (ENABLE_ALLWINNER)
-        list(APPEND src allwinner/eGON.c allwinner/sunxi_mbr.c)
+        list(APPEND src allwinner/eGON.c
+                allwinner/sunxi_mbr.c
+                allwinner/sunxi_package.c
+        )
 endif()
 
 if (ENABLE_ROCKCHIP)

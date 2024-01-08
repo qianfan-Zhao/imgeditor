@@ -135,6 +135,7 @@ static void usage(void)
 	fprintf(stderr, "   --unpack image      unpack all\n");
 	fprintf(stderr, "   --pack firmware-dir pack firmwares to a image file\n");
 	fprintf(stderr, "   --type type         select the image type\n");
+	fprintf(stderr, "-v --verbose:          set the verbose mode\n");
 	fprintf(stderr, "-h --help              show this messages\n");
 	fprintf(stderr, "\n");
 
@@ -146,8 +147,16 @@ static void usage(void)
 	}
 }
 
+static int option_verbose = 0;
+
+int get_verbose_level(void)
+{
+	return option_verbose;
+}
+
 enum {
 	ARG_TYPE,
+	ARG_VERBOSE,
 
 	ACTION_UNPACK,
 	ACTION_PACK,
@@ -161,6 +170,7 @@ static struct option imgeditor_options[] = {
 	{ "type",		required_argument,	NULL,	ARG_TYPE	},
 	{ "unpack",		required_argument,	NULL,	ACTION_UNPACK	},
 	{ "pack",		required_argument,	NULL,	ACTION_PACK	},
+	{ "verbose",		no_argument,		NULL,	ARG_VERBOSE	},
 	{ "help",		no_argument,		NULL,	ACTION_HELP	},
 	{ NULL,			0,			NULL,	0		},
 };
@@ -202,13 +212,16 @@ int main(int argc, char *argv[])
 		int option_index = 0;
 		int c;
 
-		c = getopt_long(main_argc, argv, "h", imgeditor_options, &option_index);
+		c = getopt_long(main_argc, argv, "hv", imgeditor_options, &option_index);
 		if (c == -1)
 			break;
 
 		switch (c) {
 		case ARG_TYPE:
 			type = optarg;
+			break;
+		case ARG_VERBOSE:
+			option_verbose++;
 			break;
 		case ACTION_LIST:
 		case ACTION_PACK:
