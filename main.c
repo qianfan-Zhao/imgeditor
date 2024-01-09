@@ -220,6 +220,7 @@ int main(int argc, char *argv[])
 		case ARG_TYPE:
 			type = optarg;
 			break;
+		case 'v':
 		case ARG_VERBOSE:
 			option_verbose++;
 			break;

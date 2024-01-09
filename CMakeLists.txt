@@ -50,6 +50,7 @@ if (ENABLE_ALLWINNER)
         list(APPEND src allwinner/eGON.c
                 allwinner/sunxi_mbr.c
                 allwinner/sunxi_package.c
+                allwinner/sysconfig.c
         )
 endif()
 
