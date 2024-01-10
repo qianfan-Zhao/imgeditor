@@ -22,6 +22,8 @@ set(src
         libs/GmSSL/src/sha512.c
 )
 
+set(tests)
+
 add_compile_options(-Wall)
 add_compile_options(-fstack-protector)
 add_compile_options(-Werror)
@@ -51,6 +53,10 @@ if (ENABLE_ALLWINNER)
                 allwinner/sunxi_mbr.c
                 allwinner/sunxi_package.c
                 allwinner/sysconfig.c
+        )
+
+        list(APPEND tests
+                allwinner/sysconfig/test.sh
         )
 endif()
 
@@ -93,3 +99,41 @@ endif()
 
 add_executable(imgeditor ${src})
 install(TARGETS imgeditor RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# TEST_NAME: sometings like allwinner/sysconfig/test.sh
+function(add_imgeditor_shell_test TEST_NAME)
+        find_program(BASH_PROGRAM bash)
+        if(BASH_PROGRAM)
+                get_filename_component(TEST_DIR ${TEST_NAME} DIRECTORY)
+
+                # Set up the test directory
+                set(TEST_TMPDIR "${CMAKE_CURRENT_BINARY_DIR}/tests/${TEST_DIR}")
+                add_test(NAME ${TEST_NAME}_setup
+                        COMMAND ${BASH_PROGRAM} "${PROJECT_SOURCE_DIR}/tests/setup_test_dir.sh"
+                                ${TEST_TMPDIR}
+                )
+                set_tests_properties(${TEST_NAME}_setup PROPERTIES FIXTURES_SETUP ${TEST_NAME}_fixture)
+
+                add_test(
+                        NAME ${TEST_NAME}
+                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tests/${TEST_DIR}
+                        COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/${TEST_NAME}"
+                )
+                set_tests_properties(${TEST_NAME} PROPERTIES FIXTURES_REQUIRED ${TEST_NAME}_fixture)
+                set_property(
+                        TEST "${TEST_NAME}"
+                        PROPERTY ENVIRONMENT
+                        "CMAKE_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+                        "CMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                        "TEST_TMPDIR=${TEST_TMPDIR}"
+                )
+        endif()
+endfunction()
+
+# Add test functions
+enable_testing()
+
+foreach(name ${tests})
+        add_imgeditor_shell_test(${name})
+endforeach()
+
