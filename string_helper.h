@@ -9,6 +9,30 @@
 #include <string.h>
 #include <ctype.h>
 
+static inline size_t string_count_char(const char *s, char c)
+{
+	size_t n = 0;
+
+	for (; *s != '\0'; s++) {
+		if (*s == c)
+			++n;
+	}
+
+	return n;
+}
+
+static inline size_t string_count_space(const char *s)
+{
+	size_t n = 0;
+
+	for (; *s != '\0'; s++) {
+		if (isspace(*s))
+			++n;
+	}
+
+	return n;
+}
+
 static inline char *string_skip_head_space(char *s)
 {
 	for ( ; *s != '\0' && isspace(*s); s++) {

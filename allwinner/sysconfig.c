@@ -5,11 +5,13 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
 #include "imgeditor.h"
 #include "structure.h"
+#include "string_helper.h"
 
 /* The binary sys-config file format:
  *
@@ -65,6 +67,7 @@ enum syscfg_property_type {
 struct syscfg_section {
 	struct list_head		head;
 	struct list_head		properties;
+	size_t				n_properties;
 	char				name[SYSCFG_BIN_SECTION_NAME_SZ];
 };
 
@@ -72,12 +75,14 @@ struct syscfg_property {
 	struct list_head		head;
 	enum syscfg_property_type	type;
 	char				name[SYSCFG_BIN_PROPERTY_NAME_SZ];
+	uint32_t			data_sz;
 	uint8_t				data[0];
 };
 
 struct syscfg_private {
 	struct syscfg_bin_head		head;
 
+	size_t				n_sections;
 	struct list_head		sections;
 };
 
@@ -92,6 +97,7 @@ static struct syscfg_section *syscfg_alloc_section(struct syscfg_private *p,
 		snprintf(section->name, sizeof(section->name), "%s", name);
 
 		list_add_tail(&section->head, &p->sections);
+		p->n_sections++;
 	}
 
 	return section;
@@ -102,15 +108,18 @@ static struct syscfg_property *
 			      enum syscfg_property_type type,
 			      uint32_t data_sz, const void *data)
 {
-	struct syscfg_property *prop = calloc(sizeof(*prop) + data_sz, 1);
+	uint32_t aligned_sz = aligned_length(data_sz, sizeof(uint32_t));
+	struct syscfg_property *prop = calloc(sizeof(*prop) + aligned_sz, 1);
 
 	if (prop) {
 		list_init(&prop->head);
 		list_add_tail(&prop->head, &section->properties);
+		section->n_properties++;
 
 		prop->type = type;
 		snprintf(prop->name, sizeof(prop->name), "%s", name);
 		memcpy(prop->data, data, data_sz);
+		prop->data_sz = data_sz;
 	}
 
 	return prop;
@@ -151,6 +160,14 @@ static void syscfg_bin_property_read_pattern(struct syscfg_bin_property *prop,
 
 	*type =  (pattern >> 16) & 0xffff;
 	*words = (pattern >>  0) & 0xffff;
+}
+
+static void syscfg_bin_property_write_pattern(struct syscfg_bin_property *prop,
+					      uint16_t type, uint16_t words)
+{
+	uint32_t pattern = (type << 16) | words;
+
+	prop->pattern = le32_to_cpu(pattern);
 }
 
 static int syscfg_bin_section_check(struct syscfg_bin_section *bs, int idx,
@@ -416,6 +433,9 @@ static int syscfg_list(void *private_data, int fd, int argc, char **argv)
 {
 	struct syscfg_private *p = private_data;
 
+	if (get_verbose_level() > 0)
+		printf("total sections: %zu\n", p->n_sections);
+
 	return syscfg_dump(p, stdout);
 }
 
@@ -437,6 +457,352 @@ static int syscfg_unpack(void *private_data, int fd, const char *out_name,
 	return ret;
 }
 
+/* motor_shake = port:power3<1><default><default><1>
+ * nand0_we = port:PC00<2><0><1><default>
+ */
+static int to_syscfg_gpio_port(char *s, char **next, __le32 *port)
+{
+	int n;
+
+	if (!strncasecmp(s, "power", 5)) {
+		*next = s + 5;
+		/* yes, it is 0xffff, not 0xffff_ffff */
+		*port = cpu_to_le32(0xffff);
+		return 0;
+	}
+
+	if (toupper(s[0]) != 'P')
+		return -1;
+
+	/* 1 for PA and 2 for PB... */
+	n = toupper(s[1]) - 'A' + 1;
+	if (n < 0 || n > 20)
+		return -1;
+
+	*next = s + 2;
+	*port = cpu_to_le32(n);
+	return 0;
+}
+
+static int to_syscfg_gpio_num(char *s, char **next, __le32 *num)
+{
+	char *endp;
+	int n;
+
+	n = (int)strtol(s, &endp, 10);
+	if (n < 0 || n > 32 || *endp != '<')
+		return -1;
+
+	*next = endp;
+	*num = cpu_to_le32(n);
+	return 0;
+}
+
+static int to_syscfg_gpio_mul(char *s, char **next, __le32 *mul)
+{
+	#define default_label "<default>"
+	char *endp;
+	int n;
+
+	if (!strncmp(s, default_label, strlen(default_label))) {
+		*next = s + strlen(default_label);
+		*mul = cpu_to_le32(0xffffffff);
+		return 0;
+	}
+
+	if (s[0] != '<')
+		return -1;
+
+	n = (int)strtol(s + 1, &endp, 10);
+	if (n < 0 || n > 10 || *endp != '>')
+		return -1;
+
+	*next = endp + 1;
+	*mul = cpu_to_le32(n);
+	return 0;
+}
+
+static int syscfg_gpio_from_string(struct syscfg_bin_property_gpio *gpio,
+				   char *property)
+{
+	char *s = property + strlen("port:");
+	int ret = 0;
+
+	ret += to_syscfg_gpio_port(s, &s, &gpio->port);
+	ret += to_syscfg_gpio_num(s, &s, &gpio->num);
+
+	/* reading mul, pull, driver, data */
+	for (size_t offset = offsetof(struct syscfg_bin_property_gpio, mul);
+	     offset <= offsetof(struct syscfg_bin_property_gpio, data);
+	     offset += sizeof(__le32))
+		ret += to_syscfg_gpio_mul(s, &s, (void *)gpio + offset);
+
+	if (ret < 0)
+		fprintf(stderr, "Error: bad gpio property: %s\n", property);
+
+	return ret;
+}
+
+static int syscfg_alloc_property_from_kv(struct syscfg_section *section,
+					 char *key, char *value)
+{
+	struct syscfg_property *property;
+	enum syscfg_property_type type = -1;
+	uint8_t data[128];
+	size_t sz = 0;
+
+	if (value[0] == '\0') {
+		uint32_t word = 0;
+
+		type = PROPERTY_TYPE_NULL;
+		sz = sizeof(word);
+		memcpy(data, &word, sz);
+	} else if (value[0] == '"' && value[strlen(value) - 1] == '"') {
+		char *s = value + 1;
+
+		s[strlen(s) - 1] = '\0';
+		snprintf((char *)data, sizeof(data), "%s", s);
+
+		type = PROPERTY_TYPE_STRING;
+		sz = strlen((char *)data) + 1; /* including null */
+	} else if (!strncmp(value, "0x", 2)) {
+		uint32_t word;
+		char *endp;
+
+		word = (uint32_t)strtol(value, &endp, 16);
+		if (*endp != '\0') {
+			fprintf(stderr, "Error: bad hex number: %s\n", value);
+			return -1;
+		}
+
+		type = PROPERTY_TYPE_SINGLE_WORD;
+		sz = sizeof(word);
+		memcpy(data, &word, sz);
+	} else if (!strncmp(value, "port:", 5)) {
+		struct syscfg_bin_property_gpio gpio = { 0 };
+		int ret;
+
+		ret = syscfg_gpio_from_string(&gpio, value);
+		if (ret < 0)
+			return ret;
+
+		type = PROPERTY_TYPE_GPIO;
+		sz = sizeof(gpio);
+		memcpy(data, &gpio, sz);
+	} else {
+		uint32_t word;
+		char *endp;
+
+		word = (uint32_t)strtol(value, &endp, 10);
+		if (*endp != '\0') {
+			fprintf(stderr, "Error: bad dec number: %s\n", value);
+			return -1;
+		}
+
+		type = PROPERTY_TYPE_SINGLE_WORD;
+		sz = sizeof(word);
+		memcpy(data, &word, sz);
+	}
+
+	if (type < 0) {
+		fprintf(stderr, "Error: unsupported property: %s = %s\n",
+			key, value);
+		return -1;
+	}
+
+	property = syscfg_alloc_property(section, key, type, sz, data);
+	if (!property) {
+		fprintf(stderr, "Error: alloc property failed\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int syscfg_from_ini(struct syscfg_private *p, FILE *fp)
+{
+	struct syscfg_section *section = NULL;
+	char linebuf[1024];
+	int linenum = 1;
+
+	while (fgets(linebuf, sizeof(linebuf) - 1, fp)) {
+		char *key, *value, *equal, *s = string_skip_head_space(linebuf);
+		int len, ret;
+
+		string_remove_eol_space(s);
+		len = strlen(s);
+
+		/* the line started with ';' is comments */
+		if (s[0] == '\0' || s[0] == ';')
+			goto next_line;
+
+		/* new section */
+		if (s[0] == '[' && s[len - 1] == ']') {
+			char *section_name = s + 1;
+
+			s[len - 1] = '\0'; /* remove ']' */
+
+			if (get_verbose_level() > 1)
+				printf("[%s]\n", section_name);
+
+			section = syscfg_alloc_section(p, section_name);
+			if (!section) {
+				fprintf(stderr, "Error: alloc section failed\n");
+				return -1;
+			}
+
+			goto next_line;
+		}
+
+		/* new property */
+		if (string_count_char(s, '=') != 1) {
+			fprintf(stderr, "Error: #%d bad property\n", linenum);
+			fprintf(stderr, "%s\n", s);
+			return -1;
+		} else if (!section) {
+			fprintf(stderr, "Error: #%d dissociative property\n",
+				linenum);
+			return -1;
+		}
+
+		equal = strchr(s, '=');
+		*equal = '\0';
+
+		key = s;
+		value = string_skip_head_space(equal + 1);
+		string_remove_eol_space(key);
+		string_remove_eol_space(value);
+
+		if (get_verbose_level() > 1)
+			printf("%s = %s\n", key, value);
+
+		/* both the key and value can not container space */
+		if (string_count_space(key) > 0) {
+			fprintf(stderr, "Error: #%d key property has space\n",
+				linenum);
+			return -1;
+		}
+
+		if (value[0] != '"' && string_count_space(value) > 0) {
+			fprintf(stderr, "Error: #%d property value has space\n",
+				linenum);
+			return -1;
+		}
+
+		ret = syscfg_alloc_property_from_kv(section, key, value);
+		if (ret < 0)
+			return ret;
+
+	next_line:
+		linenum++;
+	}
+
+	return 0;
+}
+
+static int syscfg_to_bin(struct syscfg_private *p, int fd_outimg)
+{
+	size_t target_offset, write_offset = sizeof(p->head);
+	struct syscfg_section *section;
+
+	lseek(fd_outimg, write_offset, SEEK_SET);
+
+	/* write all sections */
+	target_offset = write_offset
+		+ p->n_sections * sizeof(struct syscfg_bin_section);
+
+	list_for_each_entry(section, &p->sections, head, struct syscfg_section) {
+		struct syscfg_bin_section bs = { 0 };
+
+		memcpy(bs.name, section->name, SYSCFG_BIN_SECTION_NAME_SZ);
+		bs.offset = cpu_to_le32(target_offset / 4);
+		bs.property_count = cpu_to_le32(section->n_properties);
+		write(fd_outimg, &bs, sizeof(bs));
+
+		target_offset += section->n_properties *
+				sizeof(struct syscfg_bin_property);
+	}
+
+	/* write all properties */
+	list_for_each_entry(section, &p->sections, head, struct syscfg_section) {
+		struct syscfg_property *prop;
+
+		list_for_each_entry(prop, &section->properties, head,
+				    struct syscfg_property) {
+			uint16_t words = aligned_length(prop->data_sz, 4) / 4;
+			struct syscfg_bin_property bp = { 0 };
+
+			memcpy(bp.name, prop->name, SYSCFG_BIN_PROPERTY_NAME_SZ);
+			bp.offset = cpu_to_le32(target_offset / 4);
+			syscfg_bin_property_write_pattern(&bp, prop->type, words);
+			write(fd_outimg, &bp, sizeof(bp));
+
+			target_offset += words * 4;
+		}
+	}
+
+	/* and then write all property data */
+	list_for_each_entry(section, &p->sections, head, struct syscfg_section) {
+		struct syscfg_property *prop;
+
+		list_for_each_entry(prop, &section->properties, head,
+				    struct syscfg_property) {
+			size_t al = aligned_length(prop->data_sz, 4);
+
+			write(fd_outimg, prop->data, al);
+		}
+	}
+
+	/* total file's length */
+	target_offset = lseek(fd_outimg, 0, SEEK_END);
+
+	p->head.sections = cpu_to_le32(p->n_sections);
+	p->head.version_major = cpu_to_le32(1);
+	p->head.version_minor = cpu_to_le32(2);
+
+	/* aligned to 1K */
+	p->head.filesize = aligned_length(target_offset, 1024);
+	if (p->head.filesize != target_offset) {
+		uint8_t zero = 0;
+
+		lseek(fd_outimg, p->head.filesize - sizeof(zero), SEEK_SET);
+		write(fd_outimg, &zero, sizeof(zero));
+	}
+
+	p->head.filesize = cpu_to_le32(p->head.filesize);
+
+	lseek(fd_outimg, 0, SEEK_SET);
+	write(fd_outimg, &p->head, sizeof(p->head));
+
+	return 0;
+}
+
+static int syscfg_pack(void *private_data, const char *ini, int fd_outimg,
+		       int argc, char **argv)
+{
+	struct syscfg_private *p = private_data;
+	FILE *fp = fopen(ini, "r");
+	int ret;
+
+	if (!fp) {
+		fprintf(stderr, "Error: open %s failed(%m)\n", ini);
+		return -1;
+	}
+
+	ret = syscfg_from_ini(p, fp);
+	fclose(fp);
+
+	if (ret < 0) {
+		fprintf(stderr, "Error: parse %s failed\n", ini);
+		return ret;
+	}
+
+	if (get_verbose_level() > 1)
+		syscfg_dump(p, stdout);
+
+	return syscfg_to_bin(p, fd_outimg);
+}
+
 static struct imgeditor syscfg_editor = {
 	.name			= "sysconfig",
 	.descriptor		= "allwinner sysconfig image editor",
@@ -448,5 +814,6 @@ static struct imgeditor syscfg_editor = {
 	.detect			= syscfg_detect,
 	.list			= syscfg_list,
 	.unpack			= syscfg_unpack,
+	.pack			= syscfg_pack,
 };
 REGISTER_IMGEDITOR(syscfg_editor);
