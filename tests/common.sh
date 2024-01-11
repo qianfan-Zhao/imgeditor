@@ -1,5 +1,24 @@
 #!/usr/bin/env bash
 
+# gen_random_num(min, [max])
+function gen_random_num() {
+    local random_num=$1 min=$1 max=$2
+
+    if [ $# -eq 2 ] ; then
+        random_num=$((($RANDOM % ($max - $min + 1)) + $min))
+    fi
+
+    echo "${random_num}"
+}
+
+# gen_random_file(path_to_file, min, [max])
+function gen_random_file() {
+    local size
+
+    size=$(gen_random_num $2 $3)
+    dd if=/dev/urandom of=$1 bs=${size} count=1
+}
+
 # black="\e[0;30m"
 # red="\e[0;31m"
 # green="\e[0;32m"
@@ -111,6 +130,17 @@ function assert_sha1sum() {
     fi
 
     return 0
+}
+
+# assert_fileeq(file1, file2, [fail_msg])
+function assert_fileeq() {
+    if diff -q "$1" "$2" ; then
+        return 0
+    fi
+
+    log:error_default "$3" "file $1 and $2 are differ"
+    print_bash_error_stack
+    return 1
 }
 
 # assert_imgeditor_successful(args...)

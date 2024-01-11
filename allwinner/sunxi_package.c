@@ -350,7 +350,7 @@ static int sunxi_package_unpack(void *private_data, int fd, const char *outdir,
 		snprintf(filename, sizeof(filename), "%s/%s",
 			 outdir, item->name);
 
-		outfd = fileopen(filename, O_RDWR | O_CREAT, 0664);
+		outfd = fileopen(filename, O_RDWR | O_CREAT | O_TRUNC, 0664);
 		if (outfd < 0)
 			return outfd;
 

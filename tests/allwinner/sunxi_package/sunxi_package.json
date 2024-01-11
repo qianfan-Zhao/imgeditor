@@ -1,0 +1,44 @@
+{
+	"name":	"sunxi-package",
+	"serial_num":	"0x00000000",
+	"status":	"0x00000000",
+	"version_major":	"0x00000000",
+	"version_minor":	"0x00000000",
+	"items":	[{
+			"name":	"u-boot",
+			"encrypt":	"0x00000000",
+			"type":	"0x00000003",
+			"run_addr":	"0x00000000",
+			"index":	"0x00000000"
+		}, {
+			"name":	"scp",
+			"encrypt":	"0x00000000",
+			"type":	"0x00000003",
+			"run_addr":	"0x00000000",
+			"index":	"0x00000000"
+		}, {
+			"name":	"optee",
+			"encrypt":	"0x00000000",
+			"type":	"0x00000003",
+			"run_addr":	"0x00000000",
+			"index":	"0x00000000"
+		}, {
+			"name":	"soc-cfg",
+			"encrypt":	"0x00000000",
+			"type":	"0x00000003",
+			"run_addr":	"0x00000000",
+			"index":	"0x00000000"
+		}, {
+			"name":	"dtb",
+			"encrypt":	"0x00000000",
+			"type":	"0x00000003",
+			"run_addr":	"0x00000000",
+			"index":	"0x00000000"
+		}, {
+			"name":	"logo",
+			"encrypt":	"0x00000000",
+			"type":	"0x00000003",
+			"run_addr":	"0x00000000",
+			"index":	"0x00000000"
+		}]
+}

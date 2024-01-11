@@ -57,6 +57,7 @@ if (ENABLE_ALLWINNER)
 
         list(APPEND tests
                 allwinner/sysconfig/test.sh
+                allwinner/sunxi_package/test.sh
         )
 endif()
 
