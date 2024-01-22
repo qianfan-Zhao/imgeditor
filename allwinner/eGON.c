@@ -169,7 +169,7 @@ static void print_lichee_gpio_cfg_arrays(const char *print_name_fmt,
 {
 	size_t gpio_sz = sizeof(struct lichee_gpio_cfg);
 	const struct lichee_gpio_cfg *cfgs = addr;
-	int print_level = 0;
+	int alive_gpio_num = 0;
 
 	assert((sz % gpio_sz) == 0);
 	structure_print_name(print_name_fmt, name); /* no newline here */
@@ -180,7 +180,7 @@ static void print_lichee_gpio_cfg_arrays(const char *print_name_fmt,
 		if (le32_to_cpu(cfg->port) == 0)
 			continue;
 
-		if (print_level)
+		if (alive_gpio_num)
 			printf(PRINT_LEVEL1, "");
 
 		printf( "[%02zu]: P%c.%02d, "
@@ -189,11 +189,12 @@ static void print_lichee_gpio_cfg_arrays(const char *print_name_fmt,
 			cfg->port_num,
 			cfg->mul, cfg->pull, cfg->driver, cfg->data);
 
-		print_level = 1;
+		++alive_gpio_num;
 	}
+
+	if (alive_gpio_num == 0)
+		printf("\n");
 }
-
-
 
 static int save_lichee_gpio_cfg_arrays(cJSON *parent, const char *name,
 				       const void *addr, size_t sz)
