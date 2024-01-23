@@ -15,6 +15,7 @@ set(src
         crc32.c
         xstring.c
         hexdump_printf.c
+        virtual_file.c
 	libs/cJSON/cJSON.c
         libs/GmSSL/src/md5.c
         libs/GmSSL/src/sha1.c
@@ -30,6 +31,9 @@ add_compile_options(-Werror)
 add_compile_options(-Wfatal-errors)
 add_compile_options(-Wno-unused-result)
 add_compile_options(-Wsign-compare)
+
+# for lseek64
+add_compile_options(-D_LARGEFILE64_SOURCE)
 
 option(DEBUG "Compile in debug mode" OFF)
 if (DEBUG)

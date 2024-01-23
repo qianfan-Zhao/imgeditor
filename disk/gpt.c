@@ -2,7 +2,6 @@
  * EFI GUID Partition Table
  * qianfan Zhao
  */
-#define _LARGEFILE64_SOURCE
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>

@@ -3,7 +3,7 @@
  *
  * qianfan Zhao 2022-09-22
  */
-#define _LARGEFILE64_SOURCE
+#define _GNU_SOURCE /* for memmem */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include "imgeditor.h"
+#include "string_helper.h"
 
 const char *smart_format_size(uint64_t byte_addr, char *buf, size_t bufsz)
 {
@@ -50,6 +51,11 @@ int fileopen(const char *file, int flags, mode_t mode)
 
 int64_t filelength(int fd)
 {
+	struct virtual_file *vf = virtual_file_get(fd);
+
+	if (vf)
+		return vf->total_length;
+
 	/* lseek can't work on 32bit ARM platform if the file is larger than
 	 * 2GB, it will report EOVERFLOW.
 	 * let's use lseek64 instead of lseek.
@@ -58,6 +64,21 @@ int64_t filelength(int fd)
 
 	lseek64(fd, 0, SEEK_SET);
 	return sz;
+}
+
+off64_t filestart(int fd)
+{
+	struct virtual_file *vf = virtual_file_get(fd);
+
+	if (!vf)
+		return 0;
+
+	return vf->start_offset;
+}
+
+off64_t fileseek(int fd, off64_t offset)
+{
+	return lseek64(fd, filestart(fd) + offset, SEEK_SET);
 }
 
 static LIST_HEAD(registed_imgeditor_lists);
@@ -125,6 +146,164 @@ static struct imgeditor *get_imgeditor_byname(const char *name)
 	return NULL;
 }
 
+static int imgeditor_search_buf(int fd, off64_t file_offset,
+				const void *buf, size_t bufsz)
+{
+	int found = 0;
+	int ready;
+
+	do {
+		struct imgeditor *editor;
+
+		ready = 0;
+
+		list_for_each_entry(editor, &registed_imgeditor_lists, head,
+				    struct imgeditor) {
+			struct imgmagic *sm = &editor->search_magic;
+			int64_t img_offset, magic_file_offset;
+			int buf4m_search_offset;
+			const void *p_magic;
+			int detect;
+			int vfd;
+
+			if (sm->magic_sz == 0)
+				continue;
+
+			if (sm->next_search_offset == 0) {
+				buf4m_search_offset = 0;
+			} else {
+				buf4m_search_offset =
+					sm->next_search_offset - file_offset;
+			}
+
+			if (buf4m_search_offset < 0 ||
+				buf4m_search_offset >= (int)bufsz)
+				continue;
+
+			p_magic = memmem(buf + buf4m_search_offset,
+					 bufsz - buf4m_search_offset,
+					 sm->magic, sm->magic_sz);
+			if (!p_magic) {
+				sm->next_search_offset = file_offset + bufsz;
+				continue;
+			}
+
+			/* the magic is matched */
+			++ready;
+			magic_file_offset = file_offset + (p_magic - buf);
+			sm->next_search_offset = magic_file_offset + 1;
+			img_offset = magic_file_offset - sm->magic_offset;
+
+			if (get_verbose_level() > 2) {
+				/* print the raw address of this magic */
+				printf("? %-18s 0x%" PRIx64 "\n",
+					editor->name,
+					img_offset + sm->magic_offset);
+			}
+
+			if (img_offset + (int)editor->header_size >= filelength(fd))
+				continue;
+
+			memset(editor->private_data, 0,
+				editor->private_data_size);
+
+			if (editor->init)
+				editor->init(editor->private_data);
+
+			vfd = virtual_file_dup(fd, img_offset);
+			if (vfd < 0)
+				continue;
+
+			detect = editor->detect(editor->private_data, 0, vfd);
+			if (detect == 0) {
+				char s_offset[128], s_sector[128];
+
+				snprintf(s_offset, sizeof(s_offset),
+					 "0x%08" PRIx64 "(%" PRIu64 ")",
+					 img_offset, img_offset);
+
+				snprintf(s_sector, sizeof(s_sector),
+					"0x%08" PRIx64 "(%" PRIu64 ")",
+					 img_offset / 512,
+					 img_offset / 512);
+
+				printf("%-20s %-25s %-25s\n",
+					editor->name, s_offset, s_sector);
+
+				/* some driver such as sunxi_package will
+				 * alloc data when @detect,
+				 * we should free those
+				 */
+				if (editor->exit)
+					editor->exit(editor->private_data);
+				found++;
+			}
+
+			virtual_file_close(vfd);
+		}
+	} while (ready);
+
+	return found;
+}
+
+static int imgeditor_search_foreach(int fd)
+{
+	#define BUF4M_SZ (4 << 20)
+	uint8_t *buf4m = malloc(BUF4M_SZ);
+	off64_t offset = filestart(fd);
+	int loaded, ret = 0;
+
+	if (!buf4m) {
+		fprintf(stderr, "Error: alloc buf4m failed\n");
+		return -1;
+	}
+
+	printf("%-20s %-25s %-25s\n", "NAME", "OFFSET", "SECTOR");
+
+	do {
+		/* read back: 1024 is OK for all magics */
+		if (offset > 1024)
+			offset -= 1024;
+
+		lseek64(fd, offset, SEEK_SET);
+		loaded = read(fd, buf4m, BUF4M_SZ);
+		if (loaded < 0) {
+			fprintf(stderr, "Error: read from offset #%" PRIu64
+				"failed\n", offset);
+			ret = loaded;
+			break;
+		} else if (loaded == 0) {
+			break;
+		}
+
+		ret += imgeditor_search_buf(fd, offset, buf4m, loaded);
+		offset += loaded;
+	} while (loaded == BUF4M_SZ);
+
+	free(buf4m);
+	return ret;
+}
+
+static int imgeditor_search(const char *name, off64_t offset)
+{
+	int fd = virtual_file_open(name, O_RDONLY, 0, offset);
+	int search_count;
+
+	if (fd < 0)
+		return fd;
+
+	if (filelength(fd) <= 0) {
+		virtual_file_close(fd);
+		return -1;
+	}
+
+	search_count = imgeditor_search_foreach(fd);
+	if (search_count <= 0) /* noting is found */
+		return -1;
+
+	return 0;
+}
+
 static void usage(void)
 {
 	const struct imgeditor *editor;
@@ -132,9 +311,11 @@ static void usage(void)
 	fprintf(stderr, "imgeditor: firmware image edit tools\n");
 	fprintf(stderr, "Usage: imgeditor [OPTIONS] [outfile] [-- SUBOPTIONS]\n");
 	fprintf(stderr, "\n");
+	fprintf(stderr, "   --offset offset     set the offset location\n");
 	fprintf(stderr, "   --unpack image      unpack all\n");
 	fprintf(stderr, "   --pack firmware-dir pack firmwares to a image file\n");
 	fprintf(stderr, "   --type type         select the image type\n");
+	fprintf(stderr, "-s --search            search supported images\n");
 	fprintf(stderr, "-v --verbose:          set the verbose mode\n");
 	fprintf(stderr, "-h --help              show this messages\n");
 	fprintf(stderr, "\n");
@@ -157,9 +338,12 @@ int get_verbose_level(void)
 enum {
 	ARG_TYPE,
 	ARG_VERBOSE,
+	ARG_OFFSET,
 
 	ACTION_UNPACK,
 	ACTION_PACK,
+
+	ACTION_SEARCH = 's',
 
 	ACTION_LIST = 'l',
 	ACTION_HELP = 'h',
@@ -168,8 +352,10 @@ enum {
 static struct option imgeditor_options[] = {
 	/* name			has_arg,		*flag,	val */
 	{ "type",		required_argument,	NULL,	ARG_TYPE	},
+	{ "offset",		required_argument,	NULL,	ARG_OFFSET	},
 	{ "unpack",		required_argument,	NULL,	ACTION_UNPACK	},
 	{ "pack",		required_argument,	NULL,	ACTION_PACK	},
+	{ "search",		no_argument,		NULL,	ACTION_SEARCH	},
 	{ "verbose",		no_argument,		NULL,	ARG_VERBOSE	},
 	{ "help",		no_argument,		NULL,	ACTION_HELP	},
 	{ NULL,			0,			NULL,	0		},
@@ -194,8 +380,9 @@ int main(int argc, char *argv[])
 	struct imgeditor *editor = NULL;
 	const char *origin_file = NULL, *out_file = NULL, *type = NULL;
 	char tmpbuf[1024];
+	unsigned long offset = 0;
 	int main_argc = 0, sub_argc = argc;
-	int action = ACTION_LIST; /* default action */
+	int search_mode = 0, action = ACTION_LIST; /* default action */
 	int fd = -1;
 	int ret = -1;
 
@@ -210,15 +397,24 @@ int main(int argc, char *argv[])
 
 	while (1) {
 		int option_index = 0;
+		int err;
 		int c;
 
-		c = getopt_long(main_argc, argv, "hv", imgeditor_options, &option_index);
+		c = getopt_long(main_argc, argv, "hvs", imgeditor_options, &option_index);
 		if (c == -1)
 			break;
 
 		switch (c) {
 		case ARG_TYPE:
 			type = optarg;
+			break;
+		case ARG_OFFSET:
+			offset = strict_strtoul(optarg, 0, &err, NULL);
+			if (err) {
+				fprintf(stderr, "Error: bad --offset %s\n",
+					optarg);
+				return -1;
+			}
 			break;
 		case 'v':
 		case ARG_VERBOSE:
@@ -229,6 +425,9 @@ int main(int argc, char *argv[])
 		case ACTION_UNPACK:
 			origin_file = optarg;
 			action = c;
+			break;
+		case ACTION_SEARCH:
+			search_mode = 1;
 			break;
 		case ACTION_HELP:
 			usage();
@@ -247,12 +446,15 @@ int main(int argc, char *argv[])
 	if (optind < argc)
 		out_file = argv[optind];
 
+	if (search_mode)
+		return imgeditor_search(out_file, offset);
+
 	switch (action) {
 	case ACTION_LIST:
 		origin_file = out_file; /* imgeditor xxx.img */
 		/* fallthrough */
 	case ACTION_UNPACK:
-		fd = fileopen(origin_file, O_RDONLY, 0);
+		fd = virtual_file_open(origin_file, O_RDONLY, 0, offset);
 		if (fd < 0)
 			return fd;
 
@@ -271,6 +473,8 @@ int main(int argc, char *argv[])
 
 			list_for_each_entry(editor, &registed_imgeditor_lists,
 					    head, struct imgeditor) {
+				lseek64(fd, filestart(fd), SEEK_SET);
+
 				if (!editor_detect(editor, 0, fd)) {
 					matched = 1;
 					break;
@@ -285,7 +489,7 @@ int main(int argc, char *argv[])
 		}
 
 		/* recovery fd after detect */
-		lseek(fd, 0, SEEK_SET);
+		lseek64(fd, filestart(fd), SEEK_SET);
 		break;
 	case ACTION_PACK:
 		if (!out_file) {
@@ -315,7 +519,7 @@ int main(int argc, char *argv[])
 		}
 
 		/* fd point to the output image now */
-		fd = fileopen(out_file, O_RDWR | O_CREAT, 0664);
+		fd = virtual_file_open(out_file, O_RDWR | O_CREAT, 0664, 0);
 		if (fd < 0)
 			return fd;
 
@@ -383,7 +587,7 @@ int main(int argc, char *argv[])
 
 done:
 	if (!(fd < 0))
-		close(fd);
+		virtual_file_close(fd);
 
 	list_for_each_entry(editor, &registed_imgeditor_lists, head, struct imgeditor)
 		editor_exit(editor);

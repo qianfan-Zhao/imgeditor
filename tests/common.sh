@@ -145,7 +145,8 @@ function assert_fileeq() {
 
 # assert_imgeditor_successful(args...)
 function assert_imgeditor_successful() {
-    ${CMAKE_CURRENT_BINARY_DIR}/imgeditor "$@"
+    ${CMAKE_CURRENT_BINARY_DIR}/imgeditor "$@" \
+            | tee ${TEST_TMPDIR}/imgeditor-stdio.txt
     assert_success "Running imgeditor failed"
 }
 

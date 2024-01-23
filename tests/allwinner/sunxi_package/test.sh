@@ -45,3 +45,25 @@ assert_imgeditor_successful \
     ${TEST_TMPDIR}/1.bin || exit $?
 
 assert_fileeq ${TEST_TMPDIR}/sunxi_package.fex ${TEST_TMPDIR}/1.bin || exit $?
+
+# Appending sunxi_package.fex to a random file
+# The offset of sunxi_package should be 100000(0x186a0)
+gen_random_file ${SUNXI_PACKAGE_GEN}/offset 100000
+cat ${TEST_TMPDIR}/sunxi_package.fex >> ${SUNXI_PACKAGE_GEN}/offset
+
+assert_imgeditor_successful -s ${SUNXI_PACKAGE_GEN}/offset
+assert_sha1sum ${TEST_TMPDIR}/imgeditor-stdio.txt \
+        7b30b5990900cce6ee358a436d1af4a8c69f7934 \
+        || exit $?
+
+# unpack from the offset and check again
+assert_imgeditor_successful --offset 100000 \
+         --unpack ${SUNXI_PACKAGE_GEN}/offset \
+         || exit $?
+
+for file in sunxi_package.json u-boot scp optee soc-cfg dtb logo ; do
+    assert_fileeq ${SUNXI_PACKAGE_GEN}/offset.dump/${file} \
+                  ${SUNXI_PACKAGE_GEN}/${file} \
+                  "${file} is differ" \
+                  || exit $?
+done

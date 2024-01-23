@@ -322,5 +322,11 @@ static struct imgeditor abootimg_editor = {
 	.detect			= abootimg_detect,
 	.list			= abootimg_list,
 	.unpack			= abootimg_unpack,
+
+	.search_magic		= {
+		.magic		= ANDR_BOOT_MAGIC,
+		.magic_sz	= sizeof(ANDR_BOOT_MAGIC) - 1,
+		.magic_offset	= offsetof(struct andr_img_hdr, magic),
+	}
 };
 REGISTER_IMGEDITOR(abootimg_editor);

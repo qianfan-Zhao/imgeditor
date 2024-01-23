@@ -15,6 +15,8 @@
 #define TOC1_ITEM_END			0x3b454949
 #define STAMP_VALUE			0x5F0A6C39
 
+static uint8_t toc1_magic_le32[] = { 0x00, 0x98, 0x11, 0x89 };
+
 struct __attribute__((packed)) toc1_head_info {
 	char		name[16];
 	__le32		magic;
@@ -135,7 +137,7 @@ static int sunxi_package_detect(void *private_data, int force_type, int fd)
 		return -1;
 	}
 
-	lseek(fd, sizeof(struct toc1_head_info), SEEK_SET);
+	fileseek(fd, sizeof(struct toc1_head_info));
 	ret = read(fd, p->items, p->n_items * sizeof(*p->items));
 	if (ret != (int)(p->n_items * sizeof(*p->items))) {
 		fprintf_if_force_type("Error: read %d items failed\n",
@@ -451,5 +453,11 @@ static struct imgeditor sunxi_package_editor = {
 	.unpack			= sunxi_package_unpack,
 	.pack			= sunxi_package_pack,
 	.exit			= sunxi_package_exit,
+
+	.search_magic		= {
+		.magic		= toc1_magic_le32,
+		.magic_sz	= sizeof(toc1_magic_le32),
+		.magic_offset	= offsetof(struct toc1_head_info, magic),
+	}
 };
 REGISTER_IMGEDITOR(sunxi_package_editor);

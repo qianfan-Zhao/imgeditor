@@ -614,7 +614,7 @@ static int eGON_pack(void *private_data, const char *dir, int fd_outimg, int arg
 		eGON_update_checksum((uint8_t *)p->commit_hash, commit_hash_sz, &sum);
 	p->boot_head.checksum = cpu_to_le32(sum);
 
-	lseek(fd_outimg, 0, SEEK_SET);
+	fileseek(fd_outimg, 0);
 	write(fd_outimg, &p->boot_head, sizeof(p->boot_head));
 	if (p->flags & eGON_WITH_PRIV_HEAD)
 		write(fd_outimg, &p->priv_head, sizeof(p->priv_head));
@@ -639,5 +639,11 @@ static struct imgeditor eGON_editor = {
 	.unpack			= eGON_unpack,
 	.pack			= eGON_pack,
 	.list			= eGON_list,
+
+	.search_magic = {
+		.magic		= BOOT0_MAGIC,
+		.magic_sz	= sizeof(BOOT0_MAGIC) - 1,
+		.magic_offset	= offsetof(struct boot_header, magic),
+	},
 };
 REGISTER_IMGEDITOR(eGON_editor);

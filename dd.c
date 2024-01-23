@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include "imgeditor.h"
 
 /* @fdsrc: the source file descriptor, negative number means copy from /dev/zero
  * @fddst: the target file descriptor, negative number means write to /dev/null
@@ -27,9 +28,9 @@ size_t dd(int fdsrc, int fddst, off_t offt_src, off_t offt_dst, size_t sz,
 		return n_copied_bytes;
 
 	if (!(fdsrc < 0))
-		lseek(fdsrc, offt_src, SEEK_SET);
+		fileseek(fdsrc, offt_src);
 	if (!(fddst < 0))
-		lseek(fddst, offt_dst, SEEK_SET);
+		fileseek(fddst, offt_dst);
 
 	while (sz > 0) {
 		size_t sz_buster = dd_max_bufsz;

@@ -324,7 +324,7 @@ static int syscfg_detect(void *private_data, int force_type, int fd)
 		return -1;
 	}
 
-	lseek(fd, 0, SEEK_SET);
+	fileseek(fd, 0);
 	read(fd, mem, total_length);
 	ret = syscfg_from_bin(p, force_type, mem, total_length);
 	free(mem);

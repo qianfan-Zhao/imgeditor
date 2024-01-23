@@ -16,6 +16,17 @@
 #include "list_head.h"
 #include "json_helper.h"
 
+struct virtual_file {
+	int		fd;
+	off64_t		start_offset;
+	int64_t		total_length;
+};
+
+struct virtual_file *virtual_file_get(int fd);
+int virtual_file_open(const char *filename, int flags, mode_t t, off64_t offset);
+int virtual_file_dup(int ref_fd, off64_t offset);
+int virtual_file_close(int fd);
+
 int get_verbose_level(void);
 
 #define SIZE_KB(x)				((x) << 10)
@@ -48,6 +59,8 @@ const char *smart_format_size(uint64_t sz, char *buf, size_t bufsz);
 
 int fileopen(const char *file, int flags, mode_t mode);
 int64_t filelength(int fd);
+off64_t filestart(int fd);
+off64_t fileseek(int fd, off64_t offset);
 
 void hexdump(const void *buf, size_t bufsz, unsigned long baseaddr);
 
@@ -58,6 +71,13 @@ void hexdump(const void *buf, size_t bufsz, unsigned long baseaddr);
 #define IMGEDITOR_FLAG_CONTAIN_MULTI_BIN		(1 << 0)
 
 #define IMGEDITOR_FLAG_HIDE_INFO_WHEN_LIST		(1 << 1)
+
+struct imgmagic {
+	const void		*magic;
+	size_t			magic_sz;
+	size_t			magic_offset;
+	int64_t			next_search_offset;
+};
 
 struct imgeditor {
 	const char		*name;
@@ -75,6 +95,8 @@ struct imgeditor {
 	int			(*pack)(void *p, const char *dir, int fd_outimg, int argc, char **argv);
 	int			(*unpack)(void *p, int fd, const char *outdir, int argc, char **argv);
 	void			(*exit)(void *p);
+
+	struct imgmagic		search_magic;
 };
 
 void register_imgeditor(struct imgeditor *editor);

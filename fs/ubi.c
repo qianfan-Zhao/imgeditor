@@ -2,7 +2,6 @@
  * ubi image editor
  * qianfan Zhao
  */
-#define _LARGEFILE64_SOURCE
 #include <assert.h>
 #include <stdio.h>
 #include <stdint.h>
