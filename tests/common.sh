@@ -154,3 +154,7 @@ function assert_imgeditor_successful() {
 assert_env CMAKE_SOURCE_DIR
 assert_env CMAKE_CURRENT_BINARY_DIR
 assert_env TEST_TMPDIR
+
+# cleanup the TMPDIR
+rm -rf ${TEST_TMPDIR}
+mkdir -p "${TEST_TMPDIR}"

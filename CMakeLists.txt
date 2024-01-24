@@ -117,18 +117,13 @@ function(add_imgeditor_shell_test TEST_NAME)
 
                 # Set up the test directory
                 set(TEST_TMPDIR "${CMAKE_CURRENT_BINARY_DIR}/tests/${TEST_DIR}")
-                add_test(NAME ${TEST_NAME}_setup
-                        COMMAND ${BASH_PROGRAM} "${PROJECT_SOURCE_DIR}/tests/setup_test_dir.sh"
-                                ${TEST_TMPDIR}
-                )
-                set_tests_properties(${TEST_NAME}_setup PROPERTIES FIXTURES_SETUP ${TEST_NAME}_fixture)
 
                 add_test(
                         NAME ${TEST_NAME}
                         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tests/${TEST_DIR}
                         COMMAND ${BASH_PROGRAM} "${CMAKE_CURRENT_SOURCE_DIR}/tests/${TEST_NAME}"
                 )
-                set_tests_properties(${TEST_NAME} PROPERTIES FIXTURES_REQUIRED ${TEST_NAME}_fixture)
+
                 set_property(
                         TEST "${TEST_NAME}"
                         PROPERTY ENVIRONMENT
