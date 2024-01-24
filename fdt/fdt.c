@@ -24,6 +24,8 @@ typedef uint64_t			fdt64_t;
 
 #define FDT_MAGIC	0xd00dfeed	/* 4: version, 4: total size */
 
+static uint8_t fdt_magic_be32[] = { 0xd0, 0x0d, 0xfe, 0xed };
+
 struct fdt_header {
 	fdt32_t magic;			 /* magic word FDT_MAGIC */
 	fdt32_t totalsize;		 /* total size of DT block */
@@ -120,7 +122,7 @@ static int fdt_detect(void *private_data, int force_type, int fd)
 		return -1;
 	}
 
-	lseek(fd, 0, SEEK_SET);
+	fileseek(fd, 0);
 	ret = read(fd, p->dtb, p->totalsize);
 	if (ret < 0)
 		return ret;
@@ -293,5 +295,11 @@ static struct imgeditor fdt_editor = {
 	.detect			= fdt_detect,
 	.list			= fdt_list,
 	.exit			= fdt_exit,
+
+	.search_magic		= {
+		.magic		= fdt_magic_be32,
+		.magic_sz	= sizeof(fdt_magic_be32),
+		.magic_offset	= offsetof(struct fdt_header, magic),
+	}
 };
 REGISTER_IMGEDITOR(fdt_editor);
