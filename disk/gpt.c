@@ -20,6 +20,8 @@ struct efi_guid {
 	__u8 b[16];
 };
 
+static const char gpt_signature[] = "EFI PART";
+
 struct __attribute__((packed)) gpt_header {
 	__le64			signature;
 	__le32			revision;
@@ -188,16 +190,38 @@ static uint32_t gpt_header_calc_crc32(struct gpt_header *hdr)
 static int gpt_detect(void *private_data, int force_type, int fd)
 {
 	struct gpt_editor_private_data *p = private_data;
+	int good_signature = 0;
 	size_t partition_entries_sz;
+	size_t gpt_offset = 0;
 	uint32_t c32;
 	int ret;
 
 	static_assert(sizeof(struct gpt_header) == 92, "struct gpt_header");
 
-	lseek64(fd, lba2sz(GPT_PRIMARY_PARTITION_TABLE_LBA), SEEK_SET);
-	ret = read(fd, &p->hdr, sizeof(p->hdr));
-	if (ret < 0)
-		return ret;
+	for (int i = 0; i < 2 && !good_signature; i++) {
+		switch (i) {
+		case 0:
+			gpt_offset = 0;
+			break;
+		default:
+			gpt_offset = lba2sz(GPT_PRIMARY_PARTITION_TABLE_LBA);
+			break;
+		}
+
+		fileseek(fd, gpt_offset);
+		ret = read(fd, &p->hdr, sizeof(p->hdr));
+		if (ret < 0)
+			return ret;
+
+		good_signature = !memcmp(&p->hdr.signature,
+					 gpt_signature,
+					 strlen(gpt_signature));
+	}
+
+	if (!good_signature) {
+		fprintf_if_force_type("Error: signature doesn't match\n");
+		return -1;
+	}
 
 	if (le32_to_cpu(p->hdr.header_size) != sizeof(struct gpt_header)) {
 		fprintf_if_force_type("Error: header_size doesn't match\n");
@@ -221,6 +245,9 @@ static int gpt_detect(void *private_data, int force_type, int fd)
 		return -1;
 	}
 
+	/* partition_entry_lba is a absolute address, we should use
+	 * lseek64 instead of fileseek.
+	 */
 	lseek64(fd, lba2sz(le32_to_cpu(p->hdr.partition_entry_lba)), SEEK_SET);
 	partition_entries_sz = le32_to_cpu(p->hdr.sizeof_partition_entry);
 	partition_entries_sz *= p->num_partition_entries;
@@ -399,5 +426,11 @@ static struct imgeditor gpt_editor = {
 	.private_data_size	= sizeof(struct gpt_editor_private_data),
 	.detect			= gpt_detect,
 	.list			= gpt_main,
+
+	.search_magic		= {
+		.magic		= gpt_signature,
+		.magic_sz	= sizeof(gpt_signature) - 1,
+		.magic_offset	= offsetof(struct gpt_header, signature),
+	}
 };
 REGISTER_IMGEDITOR(gpt_editor);
