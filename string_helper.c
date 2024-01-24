@@ -87,7 +87,9 @@ strict_strto(long, strtol);
 strict_strto_or_default(long, strtol);
 
 strict_strto(unsigned long, strtoul);
+strict_strto_or_default(unsigned long, strtoul);
 strict_strto(unsigned long long, strtoull);
+strict_strto_or_default(unsigned long long, strtoull);
 
 __attribute__((format(printf, 3, 4)))
 size_t strncatprintf(char *s, size_t sz, const char *fmt, ...)

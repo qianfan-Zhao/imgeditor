@@ -83,8 +83,8 @@ static const struct structure_item structure_dos_partition[] = {
 	STRUCTURE_ITEM(struct dos_partition, end_head,		structure_item_print_xunsigned),
 	STRUCTURE_ITEM(struct dos_partition, end_sector,	structure_item_print_xunsigned),
 	STRUCTURE_ITEM(struct dos_partition, end_cyl,		structure_item_print_xunsigned),
-	STRUCTURE_ITEM(struct dos_partition, start,		structure_item_print_unsigned),
-	STRUCTURE_ITEM(struct dos_partition, size,		structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct dos_partition, start,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct dos_partition, size,		structure_item_print_xunsigned),
 	STRUCTURE_ITEM_END(),
 };
 

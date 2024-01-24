@@ -84,6 +84,10 @@ endif()
 
 if (ENABLE_DISK)
         list(APPEND src disk/gpt.c disk/mbr.c)
+
+        list(APPEND tests
+                disk/gpt/test.sh
+        )
 endif()
 
 if (ENABLE_FDT)

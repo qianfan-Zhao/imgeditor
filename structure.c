@@ -172,7 +172,7 @@ static int _structure_item_load_json_unsigned(cJSON *json, const char *name,
 	if (!s)
 		return -1;
 
-	*un = (uint64_t)strict_strtoll(s, base, &err, NULL);
+	*un = (uint64_t)strict_strtoull(s, base, &err, NULL);
 	return -err;
 }
 
