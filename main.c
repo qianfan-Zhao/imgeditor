@@ -146,9 +146,39 @@ static struct imgeditor *get_imgeditor_byname(const char *name)
 	return NULL;
 }
 
-static int imgeditor_search_buf(int fd, off64_t file_offset,
-				const void *buf, size_t bufsz)
+struct img_location {
+	const char		*name;
+	int64_t			offset;
+};
+
+static int img_location_compare(const void *p1, const void *p2)
 {
+	const struct img_location *img1 = p1, *img2 = p2;
+
+	return img1->offset - img2->offset;
+}
+
+static void print_img_location(struct img_location *img)
+{
+	char s_offset[128], s_sector[128];
+
+	snprintf(s_offset, sizeof(s_offset),
+		 "0x%08" PRIx64 "(%" PRIu64 ")",
+		 img->offset, img->offset);
+
+	snprintf(s_sector, sizeof(s_sector),
+		"0x%08" PRIx64 "(%" PRIu64 ")",
+		 img->offset / 512,
+		 img->offset / 512);
+
+	printf("%-20s %-25s %-25s\n", img->name, s_offset, s_sector);
+}
+
+static struct img_location *imgeditor_search_buf(int fd, off64_t file_offset,
+						 const void *buf, size_t bufsz,
+						 int *count)
+{
+	struct img_location *imgs = NULL;
 	int found = 0;
 	int ready;
 
@@ -216,19 +246,19 @@ static int imgeditor_search_buf(int fd, off64_t file_offset,
 
 			detect = editor->detect(editor->private_data, 0, vfd);
 			if (detect == 0) {
-				char s_offset[128], s_sector[128];
+				imgs = realloc(imgs,
+					       sizeof(*imgs) * (found + 1));
 
-				snprintf(s_offset, sizeof(s_offset),
-					 "0x%08" PRIx64 "(%" PRIu64 ")",
-					 img_offset, img_offset);
+				if (!imgs) {
+					fprintf(stderr, "Error: alloc %d imgs"
+						" failed\n", found);
+					found = 0;
+					break;
+				}
 
-				snprintf(s_sector, sizeof(s_sector),
-					"0x%08" PRIx64 "(%" PRIu64 ")",
-					 img_offset / 512,
-					 img_offset / 512);
-
-				printf("%-20s %-25s %-25s\n",
-					editor->name, s_offset, s_sector);
+				imgs[found].name = editor->name;
+				imgs[found].offset = img_offset;
+				found++;
 
 				/* some driver such as sunxi_package will
 				 * alloc data when @detect,
@@ -236,14 +266,14 @@ static int imgeditor_search_buf(int fd, off64_t file_offset,
 				 */
 				if (editor->exit)
 					editor->exit(editor->private_data);
-				found++;
 			}
 
 			virtual_file_close(vfd);
 		}
 	} while (ready);
 
-	return found;
+	*count = found;
+	return imgs;
 }
 
 static int imgeditor_search_foreach(int fd)
@@ -251,16 +281,17 @@ static int imgeditor_search_foreach(int fd)
 	#define BUF4M_SZ (4 << 20)
 	uint8_t *buf4m = malloc(BUF4M_SZ);
 	off64_t offset = filestart(fd);
-	int loaded, ret = 0;
+	int loaded, count = 0;
 
 	if (!buf4m) {
 		fprintf(stderr, "Error: alloc buf4m failed\n");
 		return -1;
 	}
 
-	printf("%-20s %-25s %-25s\n", "NAME", "OFFSET", "SECTOR");
-
 	do {
+		struct img_location *imgs;
+		int found = 0;
+
 		/* read back: 1024 is OK for all magics */
 		if (offset > 1024)
 			offset -= 1024;
@@ -270,18 +301,33 @@ static int imgeditor_search_foreach(int fd)
 		if (loaded < 0) {
 			fprintf(stderr, "Error: read from offset #%" PRIu64
 				"failed\n", offset);
-			ret = loaded;
 			break;
 		} else if (loaded == 0) {
 			break;
 		}
 
-		ret += imgeditor_search_buf(fd, offset, buf4m, loaded);
+		imgs = imgeditor_search_buf(fd, offset, buf4m, loaded, &found);
 		offset += loaded;
+
+		if (!found)
+			continue;
+
+		if (count == 0 && found) {
+			/* print the title */
+			printf("%-20s %-25s %-25s\n",
+				"NAME", "OFFSET", "SECTOR");
+		}
+
+		qsort(imgs, found, sizeof(*imgs), img_location_compare);
+		for (int i = 0; i < found; i++)
+			print_img_location(&imgs[i]);
+
+		free(imgs);
+		count += found;
 	} while (loaded == BUF4M_SZ);
 
 	free(buf4m);
-	return ret;
+	return count;
 }
 
 static int imgeditor_search(const char *name, off64_t offset)
