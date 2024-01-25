@@ -19,6 +19,14 @@ function gen_random_file() {
     dd if=/dev/urandom of=$1 bs=${size} count=1
 }
 
+# gen_random_file_silence(path_to_file, min, [max])
+function gen_random_file_silence() {
+    local size
+
+    size=$(gen_random_num $2 $3)
+    dd if=/dev/urandom of=$1 bs=${size} count=1 status=none
+}
+
 # black="\e[0;30m"
 # red="\e[0;31m"
 # green="\e[0;32m"
@@ -158,6 +166,8 @@ function assert_fileeq() {
 
 # assert_imgeditor_successful(args...)
 function assert_imgeditor_successful() {
+    log:info "imgeditor $@"
+
     ${CMAKE_CURRENT_BINARY_DIR}/imgeditor "$@" \
             | tee ${TEST_TMPDIR}/imgeditor-stdio.txt
     assert_pipe_success "Running imgeditor failed"

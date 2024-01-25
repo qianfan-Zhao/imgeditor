@@ -100,6 +100,10 @@ endif()
 
 if (ENABLE_FS)
         list(APPEND src fs/ext2.c fs/ubi.c)
+
+        list(APPEND tests
+                fs/ext4/test.sh
+        )
 endif()
 
 if (ENABLE_TIMEZONE)
