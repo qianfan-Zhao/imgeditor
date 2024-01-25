@@ -117,6 +117,19 @@ function assert_success() {
     return 1
 }
 
+# assert_pipe_success(fail_msg)
+#
+# Example about PIPESTATUS in bash:
+# $ false | true | true
+# $ echo ${PIPESTATUS[0]} ${PIPESTATUS[1]} ${PIPESTATUS[2]}
+# $ 1 0 0
+function assert_pipe_success() {
+    [[ ${PIPESTATUS[0]} -eq 0 ]] && return 0
+    [[ ! -z "$1" ]] && log:error "$1"
+    print_bash_error_stack
+    return 1
+}
+
 # assert_sha1sum(path_to_file, sha1, fail_msg)
 function assert_sha1sum() {
     local SHA1
@@ -147,7 +160,7 @@ function assert_fileeq() {
 function assert_imgeditor_successful() {
     ${CMAKE_CURRENT_BINARY_DIR}/imgeditor "$@" \
             | tee ${TEST_TMPDIR}/imgeditor-stdio.txt
-    assert_success "Running imgeditor failed"
+    assert_pipe_success "Running imgeditor failed"
 }
 
 # those variable are exported from CMakeLists.txt
