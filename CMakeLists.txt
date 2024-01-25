@@ -80,6 +80,10 @@ endif()
 
 if (ENABLE_ANDROID)
         list(APPEND src android/android_bootimg.c android/android_sparse.c)
+
+        list(APPEND tests
+                android/bootimg/test.sh
+        )
 endif()
 
 if (ENABLE_DISK)

@@ -6,6 +6,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "imgeditor.h"
+#include "structure.h"
 #include "gmssl/sha1.h"
 
 typedef uint32_t u32;
@@ -64,74 +65,58 @@ struct andr_img_hdr {
 	u64 dtb_addr; /* physical load address for DTB image */
 } __attribute__((packed));
 
-/* When a boot header is of version 0, the structure of boot image is as
- * follows:
- *
- * +-----------------+
- * | boot header     | 1 page
- * +-----------------+
- * | kernel          | n pages
- * +-----------------+
- * | ramdisk         | m pages
- * +-----------------+
- * | second stage    | o pages
- * +-----------------+
- *
- * n = (kernel_size + page_size - 1) / page_size
- * m = (ramdisk_size + page_size - 1) / page_size
- * o = (second_size + page_size - 1) / page_size
- *
- * 0. all entities are page_size aligned in flash
- * 1. kernel and ramdisk are required (size != 0)
- * 2. second is optional (second_size == 0 -> no second)
- * 3. load each element (kernel, ramdisk, second) at
- *    the specified physical address (kernel_addr, etc)
- * 4. prepare tags at tag_addr.  kernel_args[] is
- *    appended to the kernel commandline in the tags.
- * 5. r0 = 0, r1 = MACHINE_TYPE, r2 = tags_addr
- * 6. if second_size != 0: jump to second_addr
- *    else: jump to kernel_addr
- */
+static const struct structure_item structure_andr_hdr[] = {
+	STRUCTURE_ITEM(struct andr_img_hdr, kernel_addr,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct andr_img_hdr, kernel_size,		structure_item_print_xunsigned,
+			.flags = STRUCTURE_FLAG_NOT_SAVE),
+	STRUCTURE_ITEM(struct andr_img_hdr, ramdisk_addr,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct andr_img_hdr, ramdisk_size,		structure_item_print_xunsigned,
+			.flags = STRUCTURE_FLAG_NOT_SAVE),
+	STRUCTURE_ITEM(struct andr_img_hdr, second_addr,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct andr_img_hdr, second_size,		structure_item_print_xunsigned,
+			.flags = STRUCTURE_FLAG_NOT_SAVE),
+	STRUCTURE_ITEM(struct andr_img_hdr, dtb_addr,			structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct andr_img_hdr, dtb_size,			structure_item_print_xunsigned,
+			.flags = STRUCTURE_FLAG_NOT_SAVE),
+	STRUCTURE_ITEM(struct andr_img_hdr, recovery_dtbo_offset,	structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct andr_img_hdr, recovery_dtbo_size,		structure_item_print_xunsigned,
+			.flags = STRUCTURE_FLAG_NOT_SAVE),
+	STRUCTURE_ITEM(struct andr_img_hdr, tags_addr,			structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct andr_img_hdr, page_size,			structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct andr_img_hdr, header_version,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct andr_img_hdr, header_size,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct andr_img_hdr, os_version,			structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct andr_img_hdr, name,			structure_item_print_string),
+	STRUCTURE_ITEM(struct andr_img_hdr, cmdline,			structure_item_print_string),
+	STRUCTURE_ITEM(struct andr_img_hdr, extra_cmdline,		structure_item_print_string),
+	STRUCTURE_ITEM(struct andr_img_hdr, id,				structure_item_print_x8_array,
+			.flags = STRUCTURE_FLAG_NOT_SAVE),
+	STRUCTURE_ITEM_END(),
+};
 
-/* When the boot image header has a version of 2, the structure of the boot
- * image is as follows:
- *
- * +---------------------+
- * | boot header         | 1 page
- * +---------------------+
- * | kernel              | n pages
- * +---------------------+
- * | ramdisk             | m pages
- * +---------------------+
- * | second stage        | o pages
- * +---------------------+
- * | recovery dtbo/acpio | p pages
- * +---------------------+
- * | dtb                 | q pages
- * +---------------------+
- *
- * n = (kernel_size + page_size - 1) / page_size
- * m = (ramdisk_size + page_size - 1) / page_size
- * o = (second_size + page_size - 1) / page_size
- * p = (recovery_dtbo_size + page_size - 1) / page_size
- * q = (dtb_size + page_size - 1) / page_size
- *
- * 0. all entities are page_size aligned in flash
- * 1. kernel, ramdisk and DTB are required (size != 0)
- * 2. recovery_dtbo/recovery_acpio is required for recovery.img in non-A/B
- *    devices(recovery_dtbo_size != 0)
- * 3. second is optional (second_size == 0 -> no second)
- * 4. load each element (kernel, ramdisk, second, dtb) at
- *    the specified physical address (kernel_addr, etc)
- * 5. If booting to recovery mode in a non-A/B device, extract recovery
- *    dtbo/acpio and apply the correct set of overlays on the base device tree
- *    depending on the hardware/product revision.
- * 6. prepare tags at tag_addr.  kernel_args[] is
- *    appended to the kernel commandline in the tags.
- * 7. r0 = 0, r1 = MACHINE_TYPE, r2 = tags_addr
- * 8. if second_size != 0: jump to second_addr
- *    else: jump to kernel_addr
- */
+static void fix_andr_hdr_structure(struct structure_item *items,
+				   uint32_t hdr_version)
+{
+	uint32_t drop_offset = 0;
+
+	switch (hdr_version) {
+	case 0:
+		drop_offset = offsetof(struct andr_img_hdr, recovery_dtbo_size);
+		break;
+	case 1:
+		drop_offset = offsetof(struct andr_img_hdr, dtb_size);
+		break;
+	default:
+		return;
+	}
+
+	for (struct structure_item *st = items; st->name; st++) {
+		if (st->offset < drop_offset)
+			continue;
+
+		st->flags |= STRUCTURE_FLAG_NOT_SAVE;
+	}
+}
 
 struct abootimg_editor_private_data {
 	struct andr_img_hdr		head;
@@ -220,6 +205,11 @@ static int abootimg_list(void *private_data, int fd, int argc, char **argv)
 	struct andr_img_hdr *hdr = &p->head;
 	uint8_t *p_id = (uint8_t *)hdr->id;
 
+	if (get_verbose_level() > 1) {
+		structure_print("%-30s", hdr, structure_andr_hdr);
+		putchar('\n');
+	}
+
 	printf("kernel:           0x%08x 0x%08x\n", hdr->kernel_addr, hdr->kernel_size);
 	printf("ramdisk:          0x%08x 0x%08x\n", hdr->ramdisk_addr, hdr->ramdisk_size);
 	printf("second:           0x%08x 0x%08x\n", hdr->second_addr, hdr->second_size);
@@ -281,35 +271,254 @@ static int abootimg_unpack_save_file(int fdimg, const char *outdir, const char *
 #define ABOOTIMG_RECOVERY_DTBO		"recovery_dtbo.bin"
 
 struct abootimg_file {
+	uint32_t			min_version;
+
 	const char			*name;
-	uint32_t			size;
+	size_t				hdr_size_offset;
+};
+
+/* the order is important */
+static const struct abootimg_file abootimg_files[] = {
+	{ 0, ABOOTIMG_KERNEL,		offsetof(struct andr_img_hdr, kernel_size)		},
+	{ 0, ABOOTIMG_RAMDISK,		offsetof(struct andr_img_hdr, ramdisk_size)		},
+	{ 0, ABOOTIMG_SECOND,		offsetof(struct andr_img_hdr, second_size)		},
+	{ 1, ABOOTIMG_RECOVERY_DTBO,	offsetof(struct andr_img_hdr, recovery_dtbo_size)	},
+	{ 2, ABOOTIMG_DTB,		offsetof(struct andr_img_hdr, dtb_size)			},
+	{ 0, NULL,			0							},
 };
 
 static int abootimg_unpack(void *private_data, int fd, const char *outdir, int argc, char **argv)
 {
+	uint8_t structure_andr_hdr_fixed[sizeof(structure_andr_hdr)];
 	struct abootimg_editor_private_data *p = private_data;
 	struct andr_img_hdr *hdr = &p->head;
 	uint64_t offset = hdr->page_size;
+	const char *filelists[16] = { 0 };
+	char filename[1024];
+	cJSON *root, *json_files;
+	size_t count = 0;
 	int ret = 0;
 
-	struct abootimg_file files[] = {
-		{ "kernel.bin",		hdr->kernel_size	},
-		{ "ramdisk.bin",	hdr->ramdisk_size	},
-		{ "second.bin",		hdr->second_size	},
-		{ "recovery_dtbo.bin",	hdr->recovery_dtbo_size	},
-		{ "dtb.bin",		hdr->dtb_size		},
-		{ NULL,			0			},
-	};
-
-	for (struct abootimg_file *file = &files[0]; file->name; file++) {
-		ret = abootimg_unpack_save_file(fd, outdir, file->name,
-						offset, file->size);
-		if (ret < 0)
-			return ret;
-
-		offset += aligned_length(file->size, hdr->page_size);
+	root = cJSON_CreateObject();
+	if (!root) {
+		fprintf(stderr, "Error: create json failed\n");
+		return -1;
 	}
 
+	memcpy(structure_andr_hdr_fixed, &structure_andr_hdr,
+		sizeof(structure_andr_hdr));
+
+	fix_andr_hdr_structure(
+		(struct structure_item *)structure_andr_hdr_fixed,
+		le32_to_cpu(p->head.header_version));
+
+	ret = structure_save_json(root, hdr,
+		(struct structure_item *)structure_andr_hdr_fixed);
+	if (ret < 0) {
+		ret = -1;
+		goto done;
+	}
+
+	for (const struct abootimg_file *file = &abootimg_files[0];
+					file->name; file++) {
+		__le32 *p_hdr_size = (void *)hdr + file->hdr_size_offset;
+		uint32_t filesz = le32_to_cpu(*p_hdr_size);
+
+		if (file->min_version > le32_to_cpu(hdr->header_version))
+			break;
+		if (filesz == 0)
+			continue;
+
+		ret = abootimg_unpack_save_file(fd, outdir, file->name,
+						offset, filesz);
+		if (ret < 0)
+			goto done;
+
+		filelists[count++] = file->name;
+		offset += aligned_length(filesz, hdr->page_size);
+	}
+
+	json_files = cJSON_CreateStringArray(filelists, count);
+	if (!json_files) {
+		ret = -1;
+		goto done;
+	}
+
+	cJSON_AddItemToObject(root, "files", json_files);
+	snprintf(filename, sizeof(filename), "%s/abootimg.json", outdir);
+	json_saveto_file(root, filename);
+
+done:
+	cJSON_Delete(root);
+	return ret;
+}
+
+static int json_string_array_search(cJSON *json_files, const char *s)
+{
+	cJSON *json;
+
+	cJSON_ArrayForEach(json, json_files) {
+		if (strcmp(s, cJSON_GetStringValue(json)) == 0)
+			return 0; /* found it */
+	}
+
+	return -1;
+}
+
+static int abootimg_do_pack(struct andr_img_hdr *hdr, cJSON *json_files,
+			    const char *dir, int fd_outimg)
+{
+	const struct abootimg_file *afile = &abootimg_files[0];
+	size_t padsz = 0, offset = le32_to_cpu(hdr->page_size);
+	uint8_t sha1sum[SHA1_DIGEST_SIZE];
+	SHA1_CTX ctx;
+
+	sha1_init(&ctx);
+
+	for (; afile->name; afile++) {
+		__le32 *p_hdr_size = (void *)hdr + afile->hdr_size_offset;
+		char filename[1024];
+		int length;
+		int fd;
+
+		if (afile->min_version > le32_to_cpu(hdr->header_version))
+			break;
+
+		if (json_string_array_search(json_files, afile->name) < 0) {
+			*p_hdr_size = cpu_to_le32(0);
+			abootimg_update_sha1sum((uint8_t *)p_hdr_size,
+						sizeof(*p_hdr_size), &ctx);
+			continue;
+		}
+
+		snprintf(filename, sizeof(filename), "%s/%s", dir, afile->name);
+		fd = fileopen(filename, O_RDONLY, 0);
+		if (fd < 0)
+			return fd;
+
+		length = (int)filelength(fd);
+		if (length < 0)
+			return length;
+
+		*p_hdr_size = cpu_to_le32(length);
+		dd(fd, fd_outimg, 0, offset, length, abootimg_update_sha1sum, &ctx);
+		abootimg_update_sha1sum((uint8_t *)p_hdr_size,
+					sizeof(*p_hdr_size), &ctx);
+
+		size_t tmp = offset + length;
+		offset += aligned_length(length, le32_to_cpu(hdr->page_size));
+		padsz = offset - tmp;
+
+		close(fd);
+	}
+
+	/* padding it */
+	if (padsz != 0) {
+		uint8_t zero = 0;
+
+		lseek(fd_outimg, offset - sizeof(zero), SEEK_SET);
+		write(fd_outimg, &zero, sizeof(zero));
+	}
+
+	sha1_finish(&ctx, sha1sum);
+	memcpy(hdr->id, sha1sum, sizeof(sha1sum));
+	memcpy(hdr->magic, ANDR_BOOT_MAGIC, sizeof(hdr->magic));
+
+	lseek(fd_outimg, 0, SEEK_SET);
+	write(fd_outimg, hdr, sizeof(*hdr));
+
+	return 0;
+}
+
+static void andr_hdr_erase_from(struct andr_img_hdr *hdr, size_t offset)
+{
+	if (offset < sizeof(*hdr))
+		memset((void *)hdr + offset, 0, sizeof(*hdr) - offset);
+}
+
+static int abootimg_pack(void *private_data, const char *dir, int fd_outimg,
+			 int argc, char **argv)
+{
+	uint8_t structure_andr_hdr_fixed[sizeof(structure_andr_hdr)];
+	struct abootimg_editor_private_data *p = private_data;
+	cJSON *root, *json_files;
+	char filename[1024];
+	int ret;
+
+	snprintf(filename, sizeof(filename), "%s/abootimg.json", dir);
+	root = json_from_file(filename);
+	if (!root)
+		return -1;
+
+	json_files = cJSON_GetObjectItem(root, "files");
+	if (!json_files || !cJSON_IsArray(json_files)) {
+		fprintf(stderr, "Error: [files] is not found\n");
+		ret = -1;
+		goto done;
+	}
+
+	memcpy(structure_andr_hdr_fixed, &structure_andr_hdr,
+		sizeof(structure_andr_hdr));
+
+	fix_andr_hdr_structure(
+		(struct structure_item *)structure_andr_hdr_fixed,
+		le32_to_cpu(p->head.header_version));
+
+	ret = structure_load_json(root, &p->head,
+		(struct structure_item *)structure_andr_hdr_fixed);
+	if (ret < 0)
+		goto done;
+
+	switch (le32_to_cpu(p->head.page_size)) {
+	case 2048:
+	case 4096:
+	case 8192:
+	case 16384:
+		break;
+	default:
+		fprintf(stderr, "Error: invalid page size %d\n",
+			le32_to_cpu(p->head.page_size));
+		ret = -1;
+		goto done;
+	}
+
+	switch (le32_to_cpu(p->head.header_version)) {
+	case 0:
+		andr_hdr_erase_from(&p->head,
+			offsetof(struct andr_img_hdr, recovery_dtbo_size));
+		break;
+	case 1:
+		andr_hdr_erase_from(&p->head,
+			offsetof(struct andr_img_hdr, dtb_size));
+		break;
+	case 2:
+		break;
+	default:
+		fprintf(stderr, "Error: invalid header version %d\n",
+			le32_to_cpu(p->head.header_version));
+		ret = -1;
+		goto done;
+	}
+
+	if (!json_string_array_search(json_files, ABOOTIMG_RECOVERY_DTBO)) {
+		if (le32_to_cpu(p->head.header_version) < 1) {
+			fprintf(stderr, "Error: recovery dtbo need v1 "
+				"or later\n");
+			ret = -1;
+			goto done;
+		}
+	} else if (!json_string_array_search(json_files, ABOOTIMG_DTB)) {
+		if (le32_to_cpu(p->head.header_version) < 2) {
+			fprintf(stderr, "Error: dtb need v2 or later\n");
+			ret = -1;
+			goto done;
+		}
+	}
+
+	ret = abootimg_do_pack(&p->head, json_files, dir, fd_outimg);
+
+done:
+	cJSON_Delete(root);
 	return ret;
 }
 
@@ -322,6 +531,7 @@ static struct imgeditor abootimg_editor = {
 	.detect			= abootimg_detect,
 	.list			= abootimg_list,
 	.unpack			= abootimg_unpack,
+	.pack			= abootimg_pack,
 
 	.search_magic		= {
 		.magic		= ANDR_BOOT_MAGIC,
