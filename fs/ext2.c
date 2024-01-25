@@ -332,6 +332,9 @@ static void structure_print_ext2_inode(const char *print_name_fmt, struct ext2_i
 			else
 				structure_print(print_name_fmt, inode, ext2_inode_structure_datablocks);
 			break;
+		default:
+			structure_print(print_name_fmt, inode, ext2_inode_structure_datablocks);
+			break;
 		}
 	}
 
@@ -596,6 +599,11 @@ static void extent_iterator_exit(struct extent_iterator *it)
 	     (unsigned)((it)->ee - (it)->parent) < (it)->total_entries;	\
 	     (it)->ee = (it)->ee + 1)
 
+/*
+ * @dir: a temp variable that used when foreach.
+ * @parent: where the ext2_dirent arrays actually loaded location.
+ * @dirent_size: total bytes of loaded @parent.
+ */
 struct dirent_iterator {
 	struct ext2_inode	inode;
 
@@ -603,6 +611,66 @@ struct dirent_iterator {
 	struct ext2_dirent	*parent;
 	uint32_t		dirent_size;
 };
+
+static int dirent_iterator_init_dir_blocks(struct ext2_editor_private_data *p,
+					   struct dirent_iterator *it,
+					   uint32_t ino)
+{
+	size_t blocks = 0;
+
+	/* TODO: We doesn't support indir_block, double_indir_block,
+	 *       and triple_indir_block now.
+	 *
+	 * the inode is already loaded before run this code.
+	 */
+	if (le32_to_cpu(it->inode.b.blocks.indir_block) ||
+	    le32_to_cpu(it->inode.b.blocks.double_indir_block) ||
+	    le32_to_cpu(it->inode.b.blocks.triple_indir_block)) {
+		fprintf(stderr, "Error: inode #%d has indir/double/triple "
+			"blocks that doesn't supported\n", ino);
+		return -1;
+	}
+
+	for (int i = 0; i < INDIRECT_BLOCKS; i++) {
+		if (le32_to_cpu(it->inode.b.blocks.dir_blocks[i]) == 0)
+			break;
+		blocks++;
+	}
+
+	if (blocks == 0) {
+		fprintf(stderr, "Error: no dir_blocks defined in inode #%d\n",
+			ino);
+		return -1;
+	}
+
+	it->dirent_size = blocks * p->block_size;
+	it->parent = calloc(blocks, p->block_size);
+	if (!it->parent) {
+		fprintf(stderr, "Error: %s alloc %zu blocks for inode #%d "
+			"failed\n", __func__, blocks, ino);
+		it->dirent_size = 0;
+		return -1;
+	}
+
+	for (size_t i = 0; i < blocks; i++) {
+		uint32_t blkno = le32_to_cpu(it->inode.b.blocks.dir_blocks[i]);
+		int ret;
+
+		ret = ext2_read_blocks(p, blkno, 1,
+				       (void *)it->parent + i * p->block_size,
+				       p->block_size);
+		if (ret < 0) {
+			fprintf(stderr, "Error: read block #%d failed\n",
+				blkno);
+			free(it->parent);
+			it->parent = NULL;
+			it->dirent_size = 0;
+			return ret;
+		}
+	}
+
+	return 0;
+}
 
 static int dirent_iterator_init(struct ext2_editor_private_data *p,
 				struct dirent_iterator *it,
@@ -617,14 +685,17 @@ static int dirent_iterator_init(struct ext2_editor_private_data *p,
 	if (ret < 0)
 		return ret;
 
-	if (!(le32_to_cpu(it->inode.flags) & EXT4_EXTENTS_FL)) {
-		fprintf(stderr, "Error: inode #%d doesn't have EXT4_EXTENTS_FL\n",
-			ino);
-		return -1;
-	} else if (!(le32_to_cpu(it->inode.mode) & INODE_MODE_S_IFDIR)) {
+	if (!(le32_to_cpu(it->inode.mode) & INODE_MODE_S_IFDIR)) {
 		fprintf(stderr, "Error: %s can not work due to inode #%d is not a dir\n",
 			__func__, ino);
 		return -1;
+	}
+
+	if (!(le32_to_cpu(it->inode.flags) & EXT4_EXTENTS_FL)) {
+		/* the ext2 doesn't has ext4_extent and it will save data
+		 * to inode->b.blocks
+		 */
+		return dirent_iterator_init_dir_blocks(p, it, ino);
 	}
 
 	ret = extent_iterator_init(p, &eit, ino);
@@ -861,7 +932,8 @@ static int ext2_detect(void *private_data, int force_type, int fd)
 	else
 		p->inode_size = le16_to_cpu(sblock->inode_size);
 
-	p->block_groups = malloc(p->n_block_group * sizeof(struct ext2_block_group));
+	p->block_groups = calloc(p->n_block_group,
+				 sizeof(struct ext2_block_group));
 	if (!p->block_groups) {
 		fprintf(stderr, "Error: alloc %d ext2_block_groups failed\n",
 			p->n_block_group);
@@ -871,9 +943,14 @@ static int ext2_detect(void *private_data, int force_type, int fd)
 	/* loading all block groups */
 	lseek(fd, p->block_size, SEEK_SET);
 	for (uint32_t i = 0; i < p->n_block_group; i++) {
+		uint16_t descriptor_size = le16_to_cpu(sblock->descriptor_size);
 		struct ext2_block_group *group = &p->block_groups[i];
 
-		read(fd, group, le32_to_cpu(sblock->descriptor_size));
+		/* sblock->descriptor_size maybe zero on some ext2 filesystem */
+		if (descriptor_size == 0)
+			descriptor_size = 32;
+
+		read(fd, group, descriptor_size);
 	}
 
 	ret = ext2_read_inode(p, EXT2_ROOT_INO, &p->root_inode);
@@ -1134,6 +1211,35 @@ static int unpack_symlink(struct ext2_editor_private_data *p, uint32_t ino,
 	return 0;
 }
 
+static int unpack_file_from_dir_blocks(struct ext2_editor_private_data *p,
+				       struct ext2_inode *inode, uint32_t ino,
+				       const char *filename, int fd)
+{
+	uint32_t filesize = le32_to_cpu(inode->size);
+	size_t copied = 0;
+
+	if (filesize > INDIRECT_BLOCKS * p->block_size) {
+		fprintf(stderr, "Error: unpack %s failed(only support "
+			"dir_blocks now\n", filename);
+		return -1;
+	}
+
+	for (int i = 0; i < INDIRECT_BLOCKS && copied < filesize; i++) {
+		uint32_t chunk_sz = filesize;
+
+		if (chunk_sz > p->block_size)
+			chunk_sz = p->block_size;
+
+		dd(p->fd, fd,
+		   le32_to_cpu(inode->b.blocks.dir_blocks[i]) * p->block_size,
+		   copied, chunk_sz, NULL, NULL);
+
+		copied += chunk_sz;
+	}
+
+	return 0;
+}
+
 static int unpack_file(struct ext2_editor_private_data *p, uint32_t ino,
 		       const char *filename)
 {
@@ -1160,17 +1266,21 @@ static int unpack_file(struct ext2_editor_private_data *p, uint32_t ino,
 	mode = le16_to_cpu(inode.mode) & INODE_MODE_PERMISSION_MASK;
 
 	fd = fileopen(filename, O_RDWR | O_CREAT | O_TRUNC, mode);
-	if (fd < 0) {
-		extent_iterator_exit(&it);
+	if (fd < 0)
 		return fd;
-	}
 
 	if (filesz == 0) /* create a empty file */
 		goto done;
 
+	if (!(le32_to_cpu(inode.flags) & EXT4_EXTENTS_FL)) {
+		/* this is ext2 based filesystem */
+		ret = unpack_file_from_dir_blocks(p, &inode, ino, filename, fd);
+		goto done;
+	}
+
 	ret = extent_iterator_init(p, &it, ino);
 	if (ret < 0)
-		return ret;
+		goto done;
 
 	extent_list_foreach(&it) {
 		struct ext4_extent *ee = it.ee;
