@@ -113,6 +113,10 @@ endif()
 
 if (ENABLE_UBOOT)
         list(APPEND src u-boot/uenv.c)
+
+        list(APPEND tests
+                uboot/env/test.sh
+        )
 endif()
 
 add_executable(imgeditor ${src})

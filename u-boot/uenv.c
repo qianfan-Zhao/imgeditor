@@ -19,6 +19,7 @@ struct uenv_editor_private_data {
 };
 
 #define UENV_MINIMUM_SIZE	2048
+#define UENV_MAXIMUM_SIZE	SIZE_MB(2)
 
 void uenv_calc_crc(uint8_t *buf, size_t sz, void *p)
 {
@@ -29,13 +30,15 @@ void uenv_calc_crc(uint8_t *buf, size_t sz, void *p)
 
 static int uenv_auto_detect_filesize(int fd, long *filesz)
 {
+	const int better_sz = SIZE_KB(128);
 	uint32_t crc, crc_expected;
-	long sz = filelength(fd);
+	int64_t sz = filelength(fd);
 	uint8_t buf[sizeof(crc)];
 
-	if (sz % 2) {
-		fprintf(stderr, "Error: the file length is not power2\n");
-		return -1;
+	if (sz >= UENV_MAXIMUM_SIZE) {
+		sz = UENV_MAXIMUM_SIZE;
+	} else {
+		sz = aligned_length(sz, better_sz);
 	}
 
 	/* crc saved in little endian */
@@ -52,7 +55,10 @@ static int uenv_auto_detect_filesize(int fd, long *filesz)
 			return 0;
 		}
 
-		sz /= 2;
+		if (sz > better_sz)
+			sz -= better_sz;
+		else
+			sz = sz / 2;
 	}
 
 	return -1;
@@ -86,7 +92,7 @@ static int uenv_list(void *private_data, int fd, int argc, char **argv)
 	switch (*s) {
 	case ENV_PART_MAIN:
 	case ENV_PART_REDUND:
-		printf("%d ", *s);
+		printf("%d", *s);
 		s++;
 		break;
 	}
