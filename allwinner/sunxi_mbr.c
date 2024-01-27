@@ -204,6 +204,7 @@ static void structure_sunxi_dlpart_print_len(const char *print_name_fmt,
 }
 
 static const struct structure_item structure_sunxi_dlpart[] = {
+	STRUCTURE_ITEM(struct sunxi_dlpart,	name,			structure_item_print_string),
 	STRUCTURE_ITEM(struct sunxi_dlpart,	addr_hi,		structure_sunxi_dlpart_print_addr),
 	STRUCTURE_ITEM(struct sunxi_dlpart,	len_hi,			structure_sunxi_dlpart_print_len),
 	STRUCTURE_ITEM(struct sunxi_dlpart,	download_filename,	structure_item_print_string),
@@ -653,10 +654,27 @@ struct sunxi_dlinfo_editor_private_data {
 	struct sunxi_dlinfo		dlinfo;
 };
 
+static int buffer_check_printable(const char *buf, size_t sz,
+				  int break_when_nul)
+{
+	for (size_t i = 0; i < sz; i++) {
+		if (buf[i] == '\0') {
+			/* '\0' is ok when @break_when_nul is setted */
+			return break_when_nul ? 0 : -1;
+		}
+
+		if (!isprint(buf[i]))
+			return -1;
+	}
+
+	return 0;
+}
+
 static int sunxi_dlinfo_detect(void *private_data, int force_type, int fd)
 {
 	struct sunxi_dlinfo_editor_private_data *p = private_data;
 	struct sunxi_dlinfo *dlinfo = &p->dlinfo;
+	uint32_t download_counts;
 	uint32_t c32;
 	int ret;
 
@@ -670,16 +688,54 @@ static int sunxi_dlinfo_detect(void *private_data, int force_type, int fd)
 	if (ret < 0)
 		return ret;
 
+#if 0
+	/* Not all of platform's has this magic string */
 	if (memcmp(dlinfo->magic, SUNXI_MBR_MAGIC, sizeof(dlinfo->magic)) != 0) {
 		fprintf_if_force_type("Error: sunxi_dlinfo: bad magic\n");
 		return -1;
 	}
+#endif
 
 	c32 = crc32(0, ((uint8_t *)dlinfo) + sizeof(dlinfo->crc),
 		    sizeof(*dlinfo) - sizeof(dlinfo->crc));
 	if (c32 != dlinfo->crc) {
 		fprintf_if_force_type("Error: sunxi_dlinfo: crc doesn't match\n");
 		return -1;
+	}
+
+	download_counts = le32_to_cpu(dlinfo->download_counts);
+
+	if (download_counts == 0 || download_counts > SUNXI_MBR_MAX_PART_COUNTS) {
+		fprintf_if_force_type("Error: too many download counts: %d\n",
+					download_counts);
+		return -1;
+	}
+
+	for (uint32_t i = 0; i < download_counts; i++) {
+		struct sunxi_dlpart *part = &dlinfo->download_parts[i];
+
+		if (buffer_check_printable(part->name, sizeof(part->name), 1) < 0) {
+			fprintf_if_force_type("Error: part %d has bad name\n",
+						i);
+			return -1;
+		}
+
+		if (buffer_check_printable(part->download_filename,
+					   sizeof(part->download_filename),
+					   0) < 0) {
+			fprintf_if_force_type("Error: part %d has bad download "
+					      "filename\n", i);
+			return -1;
+		}
+
+		if (part->verify &&
+		    buffer_check_printable(part->verify_filename,
+					   sizeof(part->verify_filename),
+					   0) < 0) {
+			fprintf_if_force_type("Error: part %d has bad verify "
+					      "filename\n", i);
+			return -1;
+		}
 	}
 
 	return 0;
