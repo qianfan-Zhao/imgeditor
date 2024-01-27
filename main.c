@@ -358,6 +358,8 @@ static void usage(void)
 	fprintf(stderr, "Usage: imgeditor [OPTIONS] [outfile] [-- SUBOPTIONS]\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "   --offset offset     set the offset location\n");
+	fprintf(stderr, "   --sector sector     set the offset location in sectors\n");
+	fprintf(stderr, "   --sector-size sz    set the sector's size, default is 512\n");
 	fprintf(stderr, "   --unpack image      unpack all\n");
 	fprintf(stderr, "   --pack firmware-dir pack firmwares to a image file\n");
 	fprintf(stderr, "   --type type         select the image type\n");
@@ -385,6 +387,8 @@ enum {
 	ARG_TYPE,
 	ARG_VERBOSE,
 	ARG_OFFSET,
+	ARG_SECTOR,
+	ARG_SECTOR_SIZE,
 
 	ACTION_UNPACK,
 	ACTION_PACK,
@@ -399,6 +403,8 @@ static struct option imgeditor_options[] = {
 	/* name			has_arg,		*flag,	val */
 	{ "type",		required_argument,	NULL,	ARG_TYPE	},
 	{ "offset",		required_argument,	NULL,	ARG_OFFSET	},
+	{ "sector",		required_argument,	NULL,	ARG_SECTOR	},
+	{ "sector-size",	required_argument,	NULL,	ARG_SECTOR_SIZE	},
 	{ "unpack",		required_argument,	NULL,	ACTION_UNPACK	},
 	{ "pack",		required_argument,	NULL,	ACTION_PACK	},
 	{ "search",		no_argument,		NULL,	ACTION_SEARCH	},
@@ -421,12 +427,42 @@ static int editor_detect(const struct imgeditor *editor, int force_type, int fd)
 	return editor->detect(editor->private_data, force_type, fd);
 }
 
+static int arg_to_ull(const char *arg, const char *value,
+		      unsigned long long *ull)
+{
+	unsigned long long n;
+	int err;
+
+	n = strict_strtoull(value, 0, &err, NULL);
+	if (err) {
+		fprintf(stderr, "Error: bad %s %s\n", arg, value);
+		return -1;
+	}
+
+	*ull = n;
+	return 0;
+}
+
+static int arg_to_ul(const char *arg, const char *value, unsigned long *ul)
+{
+	unsigned long long n;
+	int ret;
+
+	ret = arg_to_ull(arg, value, &n);
+	if (ret < 0)
+		return ret;
+
+	*ul = (unsigned long)n;
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	struct imgeditor *editor = NULL;
 	const char *origin_file = NULL, *out_file = NULL, *type = NULL;
 	char tmpbuf[1024];
-	unsigned long offset = 0;
+	unsigned long long offset = 0;
+	unsigned long offset_sector = 0, sector_size = 512;
 	int main_argc = 0, sub_argc = argc;
 	int search_mode = 0, action = ACTION_LIST; /* default action */
 	int fd = -1;
@@ -443,7 +479,6 @@ int main(int argc, char *argv[])
 
 	while (1) {
 		int option_index = 0;
-		int err;
 		int c;
 
 		c = getopt_long(main_argc, argv, "hvs", imgeditor_options, &option_index);
@@ -455,12 +490,19 @@ int main(int argc, char *argv[])
 			type = optarg;
 			break;
 		case ARG_OFFSET:
-			offset = strict_strtoul(optarg, 0, &err, NULL);
-			if (err) {
-				fprintf(stderr, "Error: bad --offset %s\n",
-					optarg);
-				return -1;
-			}
+			ret = arg_to_ull("--offset", optarg, &offset);
+			if (ret < 0)
+				return ret;
+			break;
+		case ARG_SECTOR:
+			ret = arg_to_ul("--sector", optarg, &offset_sector);
+			if (ret < 0)
+				return ret;
+			break;
+		case ARG_SECTOR_SIZE:
+			ret = arg_to_ul("--sector-size", optarg, &sector_size);
+			if (ret < 0)
+				return ret;
 			break;
 		case 'v':
 		case ARG_VERBOSE:
@@ -491,6 +533,9 @@ int main(int argc, char *argv[])
 
 	if (optind < argc)
 		out_file = argv[optind];
+
+	if (offset_sector)
+		offset = offset_sector * sector_size;
 
 	if (search_mode)
 		return imgeditor_search(out_file, offset);
