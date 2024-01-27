@@ -86,7 +86,8 @@ static void sunxi_package_exit(void *private_data)
 static void sunxi_package_update_checksum(uint8_t *buf, size_t buster_sz,
 					  void *arg)
 {
-	uint32_t *sum = arg, *buf32 = (uint32_t *)buf, remain[4] = { 0 };
+	uint32_t *sum = arg, *buf32 = (uint32_t *)buf;
+	uint8_t remain[4] = { 0 };
 	size_t i = 0;
 
 	for (; i < buster_sz / sizeof(*buf32); i++)
@@ -414,7 +415,7 @@ static int sunxi_package_pack(void *private_data, const char *dir,
 
 		/* padding the last item */
 		if (i == p->n_items - 1) {
-			if (length & (SUNXI_PACKAGE_ITEM_ALIGN_LENGTH)) {
+			if (length % SUNXI_PACKAGE_ITEM_ALIGN_LENGTH) {
 				lseek(fd_outimg, imgoffset - sizeof(zero),
 					SEEK_SET);
 				write(fd_outimg, &zero, sizeof(zero));

@@ -67,3 +67,19 @@ for file in sunxi_package.json u-boot scp optee soc-cfg dtb logo ; do
                   "${file} is differ" \
                   || exit $?
 done
+
+# this test script failed sometimes and here is the file length when failed.
+gen_random_file ${SUNXI_PACKAGE_GEN}/u-boot     823287
+gen_random_file ${SUNXI_PACKAGE_GEN}/scp        121790
+gen_random_file ${SUNXI_PACKAGE_GEN}/optee      226454
+gen_random_file ${SUNXI_PACKAGE_GEN}/soc-cfg     63918
+gen_random_file ${SUNXI_PACKAGE_GEN}/dtb        131072
+gen_random_file ${SUNXI_PACKAGE_GEN}/logo       119683
+
+# generate and detect
+assert_imgeditor_successful \
+    --type sunxi_package --pack ${SUNXI_PACKAGE_GEN} \
+    ${TEST_TMPDIR}/sunxi_package.fex \
+    || exit $?
+
+assert_imgeditor_successful ${TEST_TMPDIR}/sunxi_package.fex || exit $?
