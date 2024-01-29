@@ -81,6 +81,26 @@ off64_t fileseek(int fd, off64_t offset)
 	return lseek64(fd, filestart(fd) + offset, SEEK_SET);
 }
 
+/* Return zero on successful */
+int fileread(int fd, void *buf, size_t sz)
+{
+	size_t n = 0;
+
+	while (n < sz) {
+		int ret = read(fd, buf + n, sz - n);
+
+		if (ret < 0)
+			return ret;
+
+		if (ret == 0) /* end of file */
+			break;
+
+		n += ret;
+	}
+
+	return n == sz ? 0 : -1;
+}
+
 static LIST_HEAD(registed_imgeditor_lists);
 
 static int editor_prepare_private_data(struct imgeditor *editor)

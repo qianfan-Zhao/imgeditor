@@ -61,6 +61,8 @@ int fileopen(const char *file, int flags, mode_t mode);
 int64_t filelength(int fd);
 off64_t filestart(int fd);
 off64_t fileseek(int fd, off64_t offset);
+/* Return zero on successful */
+int fileread(int fd, void *buf, size_t sz);
 
 void hexdump(const void *buf, size_t bufsz, unsigned long baseaddr);
 
