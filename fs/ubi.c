@@ -510,14 +510,12 @@ static int ubifs_ch_is_good(struct ubifs_ch *ch, size_t leb_size);
 struct ubi_bptree_branch;
 
 struct ubi_bptree_leaf_node {
-	struct list_head		leaf_head;
-
-	uint64_t			key;
+	uint32_t			key0;
+	uint32_t			key1;
 	uint32_t			self_lnum;
 	uint32_t			self_offs;
 
 	struct ubi_bptree_branch	*self_branch;
-	struct ubi_bptree_branch	*parent_branch;
 };
 
 struct ubi_bptree_branch {
@@ -525,26 +523,13 @@ struct ubi_bptree_branch {
 	uint16_t			child_cnt;
 
 	struct list_head		head;
-	struct list_head		child_leafs;
+	struct ubi_bptree_leaf_node	*child_leafs;
 	struct list_head		child_branches;
 
 	struct ubi_bptree_branch	*parent;
 };
 
-static struct ubi_bptree_leaf_node *alloc_ubi_bptree_leaf_node(void)
-{
-	struct ubi_bptree_leaf_node *leaf =
-			malloc(sizeof(struct ubi_bptree_leaf_node));
-
-	if (leaf) {
-		memset(leaf, 0, sizeof(*leaf));
-		list_init(&leaf->leaf_head);
-	}
-
-	return leaf;
-}
-
-static struct ubi_bptree_branch *alloc_ubi_bptree_branch(void)
+static struct ubi_bptree_branch *alloc_ubi_bptree_branch(size_t max_leafs)
 {
 	struct ubi_bptree_branch *branch =
 			malloc(sizeof(struct ubi_bptree_branch));
@@ -552,18 +537,46 @@ static struct ubi_bptree_branch *alloc_ubi_bptree_branch(void)
 	if (branch) {
 		memset(branch, 0, sizeof(*branch));
 		list_init(&branch->head);
-		list_init(&branch->child_leafs);
 		list_init(&branch->child_branches);
+
+		branch->child_leafs =
+			calloc(max_leafs, sizeof(*branch->child_leafs));
+
+		if (!branch->child_leafs) {
+			fprintf(stderr, "Error: Alloc %zu leafs failed\n",
+				max_leafs);
+			free(branch);
+			return NULL;
+		}
 	}
 
 	return branch;
 }
 
-static void ubi_bptree_insert_leaf_to_branch(struct ubi_bptree_leaf_node *leaf,
-					     struct ubi_bptree_branch *branch)
+static uint64_t make_u64(uint32_t msb, uint32_t lsb)
 {
-	leaf->parent_branch = branch;
-	list_add_tail(&leaf->leaf_head, &branch->child_leafs);
+	uint64_t n = msb;
+
+	n <<= 32;
+	n |= lsb;
+
+	return n;
+}
+
+static uint64_t ubi_bptree_branch_min_key(struct ubi_bptree_branch *b)
+{
+	return make_u64(b->child_leafs[0].key0, b->child_leafs[0].key1);
+}
+
+static uint64_t ubi_bptree_branch_max_key(struct ubi_bptree_branch *b)
+{
+	struct ubi_bptree_leaf_node *last_leaf =
+			&b->child_leafs[b->child_cnt] - 1;
+
+	if (last_leaf->self_branch)
+		return ubi_bptree_branch_max_key(last_leaf->self_branch);
+
+	return make_u64(last_leaf->key0, last_leaf->key1);
 }
 
 struct cache_peb {
@@ -688,21 +701,13 @@ static int ubi_bptree_load_index_node(struct ubi_editor_private_data *p,
 
 	for (int i = 0; i < self->child_cnt; i++) {
 		__le32 *key = (__le32 *)p_branch->key;
-		struct ubi_bptree_leaf_node *leaf;
+		struct ubi_bptree_leaf_node *leaf = &self->child_leafs[i];
 
-		leaf = alloc_ubi_bptree_leaf_node();
-		if (!leaf) {
-			fprintf(stderr, "Error: alloc leaf failed\n");
-			return -1;
-		}
-
-		leaf->key = le32_to_cpu(key[0]);
-		leaf->key <<= 32;
-		leaf->key |= le32_to_cpu(key[1]);
+		leaf->key0 = le32_to_cpu(key[0]);
+		leaf->key1 = le32_to_cpu(key[1]);
 
 		leaf->self_lnum = le32_to_cpu(p_branch->lnum);
 		leaf->self_offs = le32_to_cpu(p_branch->offs);
-		ubi_bptree_insert_leaf_to_branch(leaf, self);
 
 		p_branch = (void *)p_branch +
 				sizeof(struct ubifs_branch) + UBIFS_SK_LEN;
@@ -717,7 +722,6 @@ static int ubi_bptree_load(struct ubi_editor_private_data *p,
 			   struct ubi_bptree_branch *parent,
 			   void *tmp_peb)
 {
-	struct ubi_bptree_leaf_node *leaf;
 	int ret;
 
 	self->parent = parent;
@@ -730,11 +734,11 @@ static int ubi_bptree_load(struct ubi_editor_private_data *p,
 		return ret;
 
 	/* load all childs */
-	list_for_each_entry(leaf, &self->child_leafs, leaf_head,
-			    struct ubi_bptree_leaf_node) {
+	for (int i = 0; i < self->child_cnt; i++) {
+		struct ubi_bptree_leaf_node *leaf = &self->child_leafs[i];
 		struct ubi_bptree_branch *child;
 
-		child = alloc_ubi_bptree_branch();
+		child = alloc_ubi_bptree_branch(le32_to_cpu(p->sblock.fanout));
 		if (!child) {
 			fprintf(stderr, "Error: alloc ubi bptree branch failed\n");
 			return -1;
@@ -790,16 +794,12 @@ static int ubi_bptree_init(struct ubi_editor_private_data *p)
 		}
 	}
 
-	p->root = calloc(1, sizeof(struct ubi_bptree_branch));
+	p->root = alloc_ubi_bptree_branch(le16_to_cpu(p->sblock.fanout));
 	if (!p->root) {
 		fprintf(stderr, "Error: malloc root branch failed\n");
 		ret = -1;
 		goto done;
 	}
-
-	list_init(&p->root->head);
-	list_init(&p->root->child_leafs);
-	list_init(&p->root->child_branches);
 
 	ret = ubi_bptree_load(p,
 			      le32_to_cpu(p->master.root_lnum),
@@ -843,6 +843,19 @@ static void ubi_snprint_key(char *buf, size_t bufsz, uint32_t key0, uint32_t key
 		snprintf(buf, bufsz, "0x%08x 0x%08x", key0, key1);
 		break;
 	}
+}
+
+static uint64_t ubi_leaf_make_key(uint8_t keytype, uint32_t key0, uint32_t hash)
+{
+	uint64_t key = key0;
+
+	hash &= UBIFS_S_KEY_BLOCK_MASK;
+	keytype &= 0x7;
+
+	key <<= 32;
+	key |= ((keytype << UBIFS_S_KEY_BLOCK_BITS) | hash); /* key1 */
+
+	return key;
 }
 
 /* print file related(inode, dent, data) node */
@@ -912,16 +925,12 @@ static void ubi_print_leaf_node(struct ubi_editor_private_data *p,
 				int show_filenode,
 				struct ubi_bptree_leaf_node *leaf)
 {
-	uint32_t key0, key1;
 	char buf[128];
-
-	key0 = (leaf->key >> 32) & 0xffffffff;
-	key1 = (leaf->key >>  0) & 0xffffffff;
 
 	if (leaf->self_branch) /* it is a branch, not leaf node */
 		return;
 
-	ubi_snprint_key(buf, sizeof(buf), key0, key1);
+	ubi_snprint_key(buf, sizeof(buf), leaf->key0, leaf->key1);
 	printf("%-32s ", buf);
 
 	if (show_filenode)
@@ -932,34 +941,39 @@ static void ubi_bptree_print_branch(struct ubi_editor_private_data *p,
 				    int show_filenode,
 				    struct ubi_bptree_branch *branch, int level)
 {
-	struct ubi_bptree_leaf_node *leaf;
 	int leaf_idx = 0;
 
-	list_for_each_entry(leaf, &branch->child_leafs, leaf_head, struct ubi_bptree_leaf_node) {
+	for (int i = 0; i < branch->child_cnt; i++) {
+		struct ubi_bptree_leaf_node *leaf = &branch->child_leafs[i];
+
 		for (int i = 0; i < level; i++) {
 			int split = ' ';
 
 			if (i == level - 1)
 				split = '-';
 
-			for (int j = 0; j < 15; j++)
+			for (int j = 0; j < 11; j++)
 				putchar(split);
 			if (i == level - 1) {
-				printf("%02d", leaf_idx++);
+				printf("%02d/%02d",
+					++leaf_idx, branch->child_cnt);
 			} else {
-				putchar(split);
-				putchar(split);
+				for (size_t j = 0; j < strlen("01/02"); j++)
+					putchar(split);
 			}
-			for (int j = 0; j < 15; j++)
+			for (int j = 0; j < 11; j++)
 				putchar(split);
 
 			printf("|");
 		}
-		printf("%04d:%05x:%016" PRIx64 " ",
-			leaf->self_lnum, leaf->self_offs, leaf->key);
+		printf("%04d:%05x:%08x%08x",
+			leaf->self_lnum, leaf->self_offs,
+			leaf->key0, leaf->key1);
 
-		if (!leaf->self_branch)
+		if (!leaf->self_branch) {
+			putchar(' ');
 			ubi_print_leaf_node(p, show_filenode, leaf);
+		}
 		printf("\n");
 
 		if (leaf->self_branch)
@@ -984,16 +998,7 @@ static int ubi_do_bptree(struct ubi_editor_private_data *p, int argc, char **arg
 static void ubi_bptree_free_branch(struct ubi_bptree_branch *branch)
 {
 	if (list_empty(&branch->child_branches)) { /* no child branch, free self */
-		struct ubi_bptree_leaf_node *leaf, *next;
-
-		list_for_each_entry_safe(leaf, next, &branch->child_leafs,
-					 leaf_head, struct ubi_bptree_leaf_node) {
-#if 0
-			printf("free leaf: %d:%x\n", leaf->self_lnum, leaf->self_offs);
-#endif
-			list_del(&leaf->leaf_head);
-			free(leaf);
-		}
+		free(branch->child_leafs);
 #if 0
 		printf("free branch level %d with %d childs\n",
 			branch->level, branch->child_cnt);
@@ -1255,6 +1260,32 @@ static void *ubi_alloc_read_leb(struct ubi_editor_private_data *p, uint32_t lnum
 	}
 
 	return buf;
+}
+
+static struct ubifs_ch *ubi_alloc_read_ch(struct ubi_editor_private_data *p,
+					  uint32_t lnum, uint32_t offset,
+					  void **ret_peb)
+{
+	struct ubifs_ch *ch;
+	void *peb, *leb;
+
+	peb = ubi_alloc_read_leb(p, lnum, NULL);
+	if (!peb) {
+		fprintf(stderr, "Error: read leb %u failed\n", lnum);
+		return NULL;
+	}
+
+	leb = peb + p->data_offset;
+	ch = leb + offset;
+
+	if (!ubifs_ch_is_good(ch, p->leb_size)) {
+		fprintf(stderr, "Error: ubifs ch %u:%u is bad\n", lnum, offset);
+		free(peb);
+		return NULL;
+	}
+
+	*ret_peb = peb;
+	return ch;
 }
 
 static void ubi_dump_peb_hdr(uint32_t pebno, void *peb)
@@ -1624,6 +1655,166 @@ static int ubi_do_node(struct ubi_editor_private_data *p, int argc, char **argv)
 	return _ubi_do_node(p, verbose, lnum);
 }
 
+static struct ubi_bptree_leaf_node *
+ubi_bptree_find(struct ubi_bptree_branch *root, uint8_t keytype, uint32_t key0,
+		uint32_t hash_min, uint32_t hash_max)
+{
+	uint64_t key_min = ubi_leaf_make_key(keytype, key0, hash_min);
+	uint64_t key_max = ubi_leaf_make_key(keytype, key0, hash_max);
+	struct ubi_bptree_branch *b;
+
+	list_for_each_entry(b, &root->child_branches, head,
+			    struct ubi_bptree_branch) {
+		uint64_t branch_min, branch_max;
+
+		branch_min = ubi_bptree_branch_min_key(b);
+		branch_max = ubi_bptree_branch_max_key(b);
+
+		/* clear hash/block part */
+		branch_min &= ~UBIFS_S_KEY_HASH_MASK;
+
+		if (branch_min > key_min)
+			return NULL; /* not found */
+		if (branch_max < key_min)
+			continue; /* search next */
+
+		if (!list_empty(&b->child_branches)) {
+			return ubi_bptree_find(b, keytype, key0,
+					       hash_min, hash_max);
+		}
+
+		for (int i = 0; i < b->child_cnt; i++) {
+			struct ubi_bptree_leaf_node *leaf = &b->child_leafs[i];
+			uint64_t key = make_u64(leaf->key0, leaf->key1);
+
+			if (key_min == key_max && key_min == key)
+				return leaf;
+
+			if (key >= key_min && key <= key_max)
+				return leaf;
+		}
+	}
+
+	return NULL;
+}
+
+static int ubi_list_file(struct ubi_editor_private_data *p, uint32_t ino)
+{
+	struct ubi_bptree_leaf_node *leaf;
+	struct ubifs_ino_node *inode;
+	struct ubifs_ch *ch;
+	void *peb;
+
+	leaf = ubi_bptree_find(p->root, UBIFS_INO_NODE, ino, 0, 0);
+	if (!leaf) {
+		fprintf(stderr, "Error: can not found UBIFS_INO_NODE %u\n",
+			ino);
+		return -1;
+	}
+
+	ch = ubi_alloc_read_ch(p, leaf->self_lnum, leaf->self_offs, &peb);
+	if (!ch)
+		return -1;
+
+	if (ch->node_type != UBIFS_INO_NODE) {
+		fprintf(stderr, "Error: node %u:%u is not INO_NODE\n",
+			leaf->self_lnum, leaf->self_offs);
+		free(peb);
+		return -1;
+	}
+
+	inode = (struct ubifs_ino_node *)ch;
+	printf(" %" PRIu64 " bytes\n", le64_to_cpu(inode->size));
+	free(peb);
+
+	return 0;
+}
+
+static int ubi_list_dent(struct ubi_editor_private_data *p, uint32_t ino,
+			 int indent)
+{
+	const char *ubifs_itype_list_names[UBIFS_ITYPES_CNT] = {
+		[UBIFS_ITYPE_REG]	= "File",
+		[UBIFS_ITYPE_DIR]	= "Directory",
+		[UBIFS_ITYPE_BLK]	= "Block",
+		[UBIFS_ITYPE_CHR]	= "Char",
+		[UBIFS_ITYPE_FIFO]	= "FIFO",
+		[UBIFS_ITYPE_SOCK]	= "Socket",
+		[UBIFS_ITYPE_LNK]	= "Link",
+	};
+	struct ubi_bptree_leaf_node *leaf;
+	uint32_t hash_min = 0;
+
+	while (1) {
+		struct ubifs_dent_node *dent = NULL;
+		struct ubifs_ch *ch;
+		void *peb;
+		int ret = -1;
+
+		leaf = ubi_bptree_find(p->root, UBIFS_DENT_KEY, ino,
+				       hash_min, 0xffffffff);
+		if (!leaf)
+			break;
+
+		ch = ubi_alloc_read_ch(p, leaf->self_lnum, leaf->self_offs, &peb);
+		if (!ch)
+			return ret;
+
+		if (ch->node_type != UBIFS_DENT_NODE) {
+			fprintf(stderr, "Error: UBI node is not dent (%u:%u)\n",
+				leaf->self_lnum, leaf->self_offs);
+			free(peb);
+			return ret;
+		}
+
+		dent = (struct ubifs_dent_node *)ch;
+		if (dent->type >= UBIFS_ITYPES_CNT) {
+			fprintf(stderr, "Error: DENT node has bad type(%u:%u)\n",
+				leaf->self_lnum, leaf->self_offs);
+			free(peb);
+			return ret;
+		}
+
+		for (int i = 0; i < indent; i++)
+			printf("|   ");
+		printf("|-- #%08d:", (uint32_t)le64_to_cpu(dent->inum));
+		printf(" %-10s", ubifs_itype_list_names[dent->type]);
+		printf(" %s", dent->name);
+
+		if ((leaf->key1 & UBIFS_S_KEY_BLOCK_MASK) == UBIFS_S_KEY_BLOCK_MASK)
+			hash_min = UBIFS_S_KEY_BLOCK_MASK;
+		else
+			hash_min = (leaf->key1 + 1) & UBIFS_S_KEY_BLOCK_MASK;
+
+		switch (dent->type) {
+		case UBIFS_ITYPE_DIR:
+			printf("\n");
+			ret = ubi_list_dent(p, dent->inum, indent + 1);
+			break;
+		case UBIFS_ITYPE_REG:
+			ret = ubi_list_file(p, dent->inum);
+			break;
+		default:
+			printf("\n");
+			ret = 0;
+			break;
+		}
+
+		/* peb need free after we do not touch dent anymore */
+		free(peb);
+
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int ubi_list(struct ubi_editor_private_data *p)
+{
+	return ubi_list_dent(p, 1 /* root inode */, 0);
+}
+
 static int ubi_main(void *private_data, int fd, int argc, char **argv)
 {
 	struct ubi_editor_private_data *p = private_data;
@@ -1641,7 +1832,7 @@ static int ubi_main(void *private_data, int fd, int argc, char **argv)
 			return ubi_do_bptree(p, argc, argv);
 	}
 
-	return -1;
+	return ubi_list(p);
 }
 
 static struct imgeditor ubi_editor = {
