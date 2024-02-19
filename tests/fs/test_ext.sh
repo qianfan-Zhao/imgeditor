@@ -85,7 +85,7 @@ function many_files() {
 
         mkdir -p a b c
         for i in $(seq 1 1000) ; do
-            gen_random_file_silence $i.bin 1024
+            gen_random_file_silence a/$i.bin 1024
         done
     )
 }
@@ -95,9 +95,9 @@ function many_longname_files() {
         cd $1
 
         mkdir -p a b c
-        for i in $(seq 1 500) ; do
+        for i in $(seq 1 1000) ; do
             gen_random_file_silence \
-                very_lonoooooooooooooooooooooooooooooooooooooooooog_name_$i.bin \
+                a/very_lonoooooooooooooooooooooooooooooooooooooooooog_name_$i.bin \
                 1024
         done
     )
@@ -139,9 +139,18 @@ function symlink_60() {
     )
 }
 
+function large_file() {
+    (
+        cd $1
+
+        dd if=/dev/urandom of=1.bin bs=1M count=40
+    )
+}
+
 imgeditor_unpack_ext4_test simple_abc 16MiB || exit $?
 imgeditor_unpack_ext4_test many_files 16MiB || exit $?
-imgeditor_unpack_ext4_test many_longname_files 16MiB || exit $?
+imgeditor_unpack_ext4_test many_longname_files 64MiB || exit $?
 imgeditor_unpack_ext4_test simple_link 16MiB || exit $?
 imgeditor_unpack_ext4_test symlink_60 16MiB || exit $?
 imgeditor_unpack_ext4_test long_link_target_name 16MiB || exit $?
+imgeditor_unpack_ext4_test large_file 64MiB || exit $?

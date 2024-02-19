@@ -449,6 +449,115 @@ static void *ext2_alloc_read_block(struct ext2_editor_private_data *p,
 	return blk;
 }
 
+struct ext2_inode_blocks {
+	uint32_t		*blocks;
+	size_t			total;
+
+	/* private data */
+	size_t			__maxsize;
+};
+
+static int ext2_inode_blocks_push(struct ext2_editor_private_data *p,
+				  struct ext2_inode_blocks *b, uint32_t blkno)
+{
+	if (b->__maxsize == 0) {
+		b->total = 0;
+		b->__maxsize = INDIRECT_BLOCKS;
+		b->blocks = calloc(b->__maxsize, sizeof(*b->blocks));
+	} else if (b->total + 1 > b->__maxsize) {
+		b->__maxsize *= 2;
+		b->blocks = realloc(b->blocks,
+				    b->__maxsize * sizeof(*b->blocks));
+	}
+
+	if (!b->blocks) {
+		fprintf(stderr, "Error: Alloc %zu inode indir blocks failed\n",
+			b->__maxsize);
+		return -1;
+	}
+
+	b->blocks[b->total] = blkno;
+	b->total++;
+
+	return 0;
+}
+
+#define ext2_inode_read_block_define(name, todo)			\
+static int								\
+ext2_inode_##name##_blocks_push(struct ext2_editor_private_data *p,	\
+				struct ext2_inode_blocks *b,		\
+				uint32_t blkno)				\
+{									\
+	__le32 *blkbuf = ext2_alloc_read_block(p, blkno);		\
+	size_t maxcount = p->block_size / sizeof(__le32);		\
+	int ret = 0;							\
+									\
+	if (!blkbuf) {							\
+		fprintf(stderr, "Error: read %s blk #%d failed\n",	\
+			#name, blkno);					\
+		return -1;						\
+	}								\
+									\
+	for (size_t i = 0; i < maxcount; i++) {				\
+		uint32_t n = le32_to_cpu(blkbuf[i]);			\
+									\
+		if (n == 0)						\
+			break;						\
+									\
+		ret = todo(p, b, n);					\
+		if (ret < 0)						\
+			return ret;					\
+	}								\
+									\
+	return ret;							\
+}
+
+ext2_inode_read_block_define(indir, ext2_inode_blocks_push);
+ext2_inode_read_block_define(double_indir, ext2_inode_indir_blocks_push);
+ext2_inode_read_block_define(triple_indir, ext2_inode_double_indir_blocks_push);
+
+static int ext2_inode_blocks_read(struct ext2_editor_private_data *p,
+				  struct ext2_inode_blocks *b,
+				  struct ext2_inode *inode,
+				  uint32_t ino)
+{
+	uint32_t blkno;
+	int ret = 0;
+
+	for (int i = 0; i < INDIRECT_BLOCKS; i++) {
+		blkno = le32_to_cpu(inode->b.blocks.dir_blocks[i]);
+		if (blkno == 0)
+			return ret;
+
+		ret = ext2_inode_blocks_push(p, b, blkno);
+		if (ret < 0)
+			return ret;
+	}
+
+	blkno = le32_to_cpu(inode->b.blocks.indir_block);
+	if (blkno) {
+		ret = ext2_inode_indir_blocks_push(p, b, blkno);
+		if (ret < 0)
+			return ret;
+	}
+
+	blkno = le32_to_cpu(inode->b.blocks.double_indir_block);
+	if (blkno) {
+		ret = ext2_inode_double_indir_blocks_push(p, b, blkno);
+		if (ret < 0)
+			return ret;
+	}
+
+	blkno = le32_to_cpu(inode->b.blocks.triple_indir_block);
+	if (blkno) {
+		ret = ext2_inode_triple_indir_blocks_push(p, b, blkno);
+		if (ret < 0)
+			return ret;
+	}
+
+	return ret;
+}
+
 static uint64_t ext4_extent_start_block(struct ext4_extent *ee)
 {
 	uint64_t ee_start = le16_to_cpu(ee->ee_start_hi);
@@ -616,44 +725,31 @@ static int dirent_iterator_init_dir_blocks(struct ext2_editor_private_data *p,
 					   struct dirent_iterator *it,
 					   uint32_t ino)
 {
-	size_t blocks = 0;
+	struct ext2_inode_blocks b = { .blocks = NULL };
+	int ret;
 
-	/* TODO: We doesn't support indir_block, double_indir_block,
-	 *       and triple_indir_block now.
-	 *
-	 * the inode is already loaded before run this code.
-	 */
-	if (le32_to_cpu(it->inode.b.blocks.indir_block) ||
-	    le32_to_cpu(it->inode.b.blocks.double_indir_block) ||
-	    le32_to_cpu(it->inode.b.blocks.triple_indir_block)) {
-		fprintf(stderr, "Error: inode #%d has indir/double/triple "
-			"blocks that doesn't supported\n", ino);
-		return -1;
-	}
+	ret = ext2_inode_blocks_read(p, &b, &it->inode, ino);
+	if (ret < 0)
+		return ret;
 
-	for (int i = 0; i < INDIRECT_BLOCKS; i++) {
-		if (le32_to_cpu(it->inode.b.blocks.dir_blocks[i]) == 0)
-			break;
-		blocks++;
-	}
-
-	if (blocks == 0) {
+	if (b.total == 0) {
 		fprintf(stderr, "Error: no dir_blocks defined in inode #%d\n",
 			ino);
 		return -1;
 	}
 
-	it->dirent_size = blocks * p->block_size;
-	it->parent = calloc(blocks, p->block_size);
+	it->dirent_size = b.total * p->block_size;
+	it->parent = calloc(b.total, p->block_size);
 	if (!it->parent) {
 		fprintf(stderr, "Error: %s alloc %zu blocks for inode #%d "
-			"failed\n", __func__, blocks, ino);
+			"failed\n", __func__, b.total, ino);
 		it->dirent_size = 0;
-		return -1;
+		ret = -1;
+		goto done;
 	}
 
-	for (size_t i = 0; i < blocks; i++) {
-		uint32_t blkno = le32_to_cpu(it->inode.b.blocks.dir_blocks[i]);
+	for (size_t i = 0; i < b.total; i++) {
+		uint32_t blkno = b.blocks[i];
 		int ret;
 
 		ret = ext2_read_blocks(p, blkno, 1,
@@ -665,11 +761,13 @@ static int dirent_iterator_init_dir_blocks(struct ext2_editor_private_data *p,
 			free(it->parent);
 			it->parent = NULL;
 			it->dirent_size = 0;
-			return ret;
+			break;
 		}
 	}
 
-	return 0;
+done:
+	free(b.blocks);
+	return ret;
 }
 
 static int dirent_iterator_init(struct ext2_editor_private_data *p,
@@ -1215,29 +1313,38 @@ static int unpack_file_from_dir_blocks(struct ext2_editor_private_data *p,
 				       struct ext2_inode *inode, uint32_t ino,
 				       const char *filename, int fd)
 {
+	struct ext2_inode_blocks b = { .blocks = NULL };
 	uint32_t filesize = le32_to_cpu(inode->size);
 	size_t copied = 0;
+	int ret;
 
-	if (filesize > INDIRECT_BLOCKS * p->block_size) {
-		fprintf(stderr, "Error: unpack %s failed(only support "
-			"dir_blocks now\n", filename);
-		return -1;
+	ret = ext2_inode_blocks_read(p, &b, inode, ino);
+	if (ret < 0)
+		return ret;
+
+	if (filesize > b.total * p->block_size) {
+		fprintf(stderr, "Error: unpack %s failed(filesize %u and "
+			"dir_blocks %zu doesn't match)\n",
+			filename, filesize, b.total);
+		ret = -1;
+		goto done;
 	}
 
-	for (int i = 0; i < INDIRECT_BLOCKS && copied < filesize; i++) {
+	for (size_t i = 0; i < b.total && copied < filesize; i++) {
 		uint32_t chunk_sz = filesize;
 
 		if (chunk_sz > p->block_size)
 			chunk_sz = p->block_size;
 
-		dd(p->fd, fd,
-		   le32_to_cpu(inode->b.blocks.dir_blocks[i]) * p->block_size,
-		   copied, chunk_sz, NULL, NULL);
+		dd(p->fd, fd, b.blocks[i] * p->block_size, copied, chunk_sz,
+		   NULL, NULL);
 
 		copied += chunk_sz;
 	}
 
-	return 0;
+done:
+	free(b.blocks);
+	return ret;
 }
 
 static int unpack_file(struct ext2_editor_private_data *p, uint32_t ino,
