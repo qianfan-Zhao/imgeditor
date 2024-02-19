@@ -391,7 +391,7 @@ static void usage(void)
 	fprintf(stderr, "Available image types:\n");
 	list_for_each_entry(editor, &registed_imgeditor_lists, head,
 			    const struct imgeditor) {
-		fprintf(stderr, "  %-10s %s\n",
+		fprintf(stderr, "  %-20s %s\n",
 			editor->name, editor->descriptor);
 	}
 }
