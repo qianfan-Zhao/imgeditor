@@ -1461,6 +1461,15 @@ static int ubi_print_node_verbose(struct ubifs_ch *ch, unsigned long leb_offset,
 		break;
 	case UBIFS_INO_NODE:
 		structure_print(PRINT_LEVEL1, ch, structure_ubifs_ino_node);
+
+		if (get_verbose_level() > 1) {
+			struct ubifs_ino_node *inode =
+				(struct ubifs_ino_node *)ch;
+			size_t data_len = (size_t)le64_to_cpu(inode->data_len);
+
+			if (data_len)
+				hexdump(inode->data, data_len, 0);
+		}
 		break;
 	case UBIFS_DENT_NODE:
 		structure_print(PRINT_LEVEL1, ch, structure_ubifs_dent_node);
@@ -1581,7 +1590,7 @@ static int ubi_print_node_brief(struct ubifs_ch *ch, unsigned long leb_offset, i
 	return 0;
 }
 
-static int _ubi_do_node(struct ubi_editor_private_data *p, int verbose, int lnum)
+static int _ubi_do_node(struct ubi_editor_private_data *p, int lnum)
 {
 	void *peb = ubi_alloc_read_leb(p, lnum, NULL);
 	void *leb = peb + p->data_offset;
@@ -1610,7 +1619,7 @@ static int _ubi_do_node(struct ubi_editor_private_data *p, int verbose, int lnum
 			break;
 		}
 
-		if (verbose) {
+		if (get_verbose_level() > 0) {
 			if (idx != 0)
 				printf("\n");
 			ret = ubi_print_node_verbose(ch, node - leb, idx);
@@ -1632,12 +1641,10 @@ done:
 
 static int ubi_do_node(struct ubi_editor_private_data *p, int argc, char **argv)
 {
-	int verbose = 1, lnum = -1;
+	int lnum = -1;
 
 	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "--short"))
-			verbose = 0;
-		else if (!strcmp(argv[i], "sblock"))
+		if (!strcmp(argv[i], "sblock"))
 			lnum = UBIFS_SB_LNUM;
 		else if (!strcmp(argv[i], "master"))
 			lnum = UBIFS_MST_LNUM;
@@ -1652,7 +1659,7 @@ static int ubi_do_node(struct ubi_editor_private_data *p, int argc, char **argv)
 		return -1;
 	}
 
-	return _ubi_do_node(p, verbose, lnum);
+	return _ubi_do_node(p, lnum);
 }
 
 static struct ubi_bptree_leaf_node *
@@ -1698,35 +1705,61 @@ ubi_bptree_find(struct ubi_bptree_branch *root, uint8_t keytype, uint32_t key0,
 	return NULL;
 }
 
-static int ubi_list_file(struct ubi_editor_private_data *p, uint32_t ino)
+static struct ubifs_ino_node *
+	ubi_alloc_read_inode(struct ubi_editor_private_data *p, uint32_t ino,
+			     void **ret_peb)
 {
 	struct ubi_bptree_leaf_node *leaf;
-	struct ubifs_ino_node *inode;
 	struct ubifs_ch *ch;
-	void *peb;
 
 	leaf = ubi_bptree_find(p->root, UBIFS_INO_NODE, ino, 0, 0);
 	if (!leaf) {
 		fprintf(stderr, "Error: can not found UBIFS_INO_NODE %u\n",
 			ino);
-		return -1;
+		return NULL;
 	}
 
-	ch = ubi_alloc_read_ch(p, leaf->self_lnum, leaf->self_offs, &peb);
+	ch = ubi_alloc_read_ch(p, leaf->self_lnum, leaf->self_offs, ret_peb);
 	if (!ch)
-		return -1;
+		return NULL;
 
 	if (ch->node_type != UBIFS_INO_NODE) {
 		fprintf(stderr, "Error: node %u:%u is not INO_NODE\n",
 			leaf->self_lnum, leaf->self_offs);
-		free(peb);
-		return -1;
+		free(*ret_peb);
+		return NULL;
 	}
 
-	inode = (struct ubifs_ino_node *)ch;
+	return (struct ubifs_ino_node *)ch;
+}
+
+static int ubi_list_file(struct ubi_editor_private_data *p, uint32_t ino)
+{
+	struct ubifs_ino_node *inode;
+	void *peb;
+
+	inode = ubi_alloc_read_inode(p, ino, &peb);
+	if (!inode)
+		return -1;
+
 	printf(" %" PRIu64 " bytes\n", le64_to_cpu(inode->size));
 	free(peb);
+	return 0;
+}
 
+static int ubi_list_link(struct ubi_editor_private_data *p, uint32_t ino)
+{
+	struct ubifs_ino_node *inode;
+	void *peb;
+
+	inode = ubi_alloc_read_inode(p, ino, &peb);
+	if (!inode)
+		return -1;
+
+	printf(" -> %.*s\n",
+		(int)le64_to_cpu(inode->data_len),
+		(const char *)inode->data);
+	free(peb);
 	return 0;
 }
 
@@ -1793,6 +1826,9 @@ static int ubi_list_dent(struct ubi_editor_private_data *p, uint32_t ino,
 			break;
 		case UBIFS_ITYPE_REG:
 			ret = ubi_list_file(p, dent->inum);
+			break;
+		case UBIFS_ITYPE_LNK:
+			ret = ubi_list_link(p, dent->inum);
 			break;
 		default:
 			printf("\n");
