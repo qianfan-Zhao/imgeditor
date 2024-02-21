@@ -1748,6 +1748,13 @@ static struct ubifs_ino_node *
 	return (struct ubifs_ino_node *)ch;
 }
 
+static struct ubi_bptree_leaf_node *
+	ubi_bptree_find_data_block(struct ubi_editor_private_data *p,
+				   uint32_t ino, uint32_t blk_idx)
+{
+	return ubi_bptree_find(p->root, UBIFS_DATA_KEY, ino, blk_idx, blk_idx);
+}
+
 static struct ubifs_data_node *
 	ubi_alloc_read_data_node(struct ubi_editor_private_data *p,
 				 uint32_t ino, uint32_t blk_idx, void **ret_peb)
@@ -1755,9 +1762,9 @@ static struct ubifs_data_node *
 	struct ubi_bptree_leaf_node *leaf;
 	struct ubifs_ch *ch;
 
-	leaf = ubi_bptree_find(p->root, UBIFS_DATA_KEY, ino, blk_idx, blk_idx);
+	leaf = ubi_bptree_find_data_block(p, ino, blk_idx);
 	if (!leaf) {
-		fprintf(stderr, "Error: can not found UBIFS_DATA_NODE %u + %u\n",
+		fprintf(stderr, "Error: can not found UBIFS_DATA_NODE %u+%u\n",
 			ino, blk_idx);
 		return NULL;
 	}
@@ -1965,14 +1972,30 @@ static int ubi_unpack_file(struct ubi_editor_private_data *p, uint32_t ino,
 	free(inode_peb);
 	inode_peb = NULL;
 
+	if (filesz == 0)
+		goto done;
+
+	/* The ubifs will not generate data block for all zero file */
+	if (!ubi_bptree_find_data_block(p, ino, 0)) {
+		uint8_t zero = 0;
+
+		lseek64(fd, filesz - sizeof(zero), SEEK_SET);
+		write(fd, &zero, sizeof(zero));
+
+		goto done;
+	}
+
 	while (n < filesz) {
 		struct ubifs_data_node *dnode;
 		void *data_peb;
 		uint32_t chunk_sz;
 
 		dnode = ubi_alloc_read_data_node(p, ino, data_block, &data_peb);
-		if (!dnode)
+		if (!dnode) {
+			fprintf(stderr, "Error: unpack file %s failed\n",
+				filename);
 			return -1;
+		}
 
 		chunk_sz = le32_to_cpu(dnode->size);
 
@@ -1983,6 +2006,8 @@ static int ubi_unpack_file(struct ubi_editor_private_data *p, uint32_t ino,
 		free(data_peb);
 	}
 
+done:
+	close(fd);
 	return 0;
 }
 

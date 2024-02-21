@@ -188,6 +188,20 @@ function large_file() {
     )
 }
 
+# The ubi filesystem will not generate data block for zero file.
+#
+# $ ./imgeditor tests/fs/ubi_none/zero_1MiB.ubi -- bptree --show-filenode
+# ---01/03----| INO         1                    [40755]
+# ---02/03----| DENT ->000001 hash:  0x0856419d  [inode=65  file 1.bin]
+# ---03/03----| INO        65                    [100644]
+function zero_1MiB() {
+    (
+        cd $1
+
+        dd if=/dev/zero of=1.bin bs=1M count=1
+    )
+}
+
 imgeditor_unpack_ubi_test single_file 16MiB || exit $?
 imgeditor_unpack_ubi_test simple_abc 16MiB || exit $?
 imgeditor_unpack_ubi_test many_files 16MiB || exit $?
@@ -197,3 +211,4 @@ imgeditor_unpack_ubi_test simple_link 16MiB || exit $?
 imgeditor_unpack_ubi_test symlink_60 16MiB || exit $?
 imgeditor_unpack_ubi_test long_link_target_name 16MiB || exit $?
 imgeditor_unpack_ubi_test large_file 64MiB || exit $?
+imgeditor_unpack_ubi_test zero_1MiB 16MiB || exit $?

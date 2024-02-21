@@ -107,6 +107,7 @@ if (ENABLE_FS)
                 fs/ext4/test.sh
                 fs/ext2/test.sh
                 fs/ubi/test.sh
+                fs/ubi_none/test.sh
         )
 endif()
 
