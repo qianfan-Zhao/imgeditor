@@ -1462,7 +1462,7 @@ static int ubi_print_node_verbose(struct ubifs_ch *ch, unsigned long leb_offset,
 	case UBIFS_INO_NODE:
 		structure_print(PRINT_LEVEL1, ch, structure_ubifs_ino_node);
 
-		if (get_verbose_level() > 1) {
+		if (get_verbose_level() >= 0) { /* always print */
 			struct ubifs_ino_node *inode =
 				(struct ubifs_ino_node *)ch;
 			size_t data_len = (size_t)le64_to_cpu(inode->data_len);
@@ -1851,6 +1851,28 @@ static int ubi_list(struct ubi_editor_private_data *p)
 	return ubi_list_dent(p, 1 /* root inode */, 0);
 }
 
+static int ubi_do_inode(struct ubi_editor_private_data *p, int argc, char **argv)
+{
+	int ino = (int)strtol(argv[1], NULL, 0);
+	struct ubifs_ino_node *inode;
+	void *peb, *leb;
+
+	if (ino <= 0) {
+		fprintf(stderr, "Usage: ubi inode #ino\n");
+		return -1;
+	}
+
+	inode = ubi_alloc_read_inode(p, ino, &peb);
+	if (!inode)
+		return -1;
+
+	leb = peb + p->data_offset;
+	ubi_print_node_verbose(&inode->ch, (void *)inode - leb, 0);
+
+	free(peb);
+	return 0;
+}
+
 static int ubi_main(void *private_data, int fd, int argc, char **argv)
 {
 	struct ubi_editor_private_data *p = private_data;
@@ -1864,6 +1886,8 @@ static int ubi_main(void *private_data, int fd, int argc, char **argv)
 			return ubi_do_vtbl(p, argc, argv);
 		else if (!strcmp(argv[0], "node"))
 			return ubi_do_node(p, argc, argv);
+		else if (!strcmp(argv[0], "inode"))
+			return ubi_do_inode(p, argc, argv);
 		else if (!strcmp(argv[0], "bptree"))
 			return ubi_do_bptree(p, argc, argv);
 	}
