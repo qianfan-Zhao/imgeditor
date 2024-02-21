@@ -202,6 +202,51 @@ function zero_1MiB() {
     )
 }
 
+# The first data block is not zero.
+# $./imgeditor tests/fs/ubi_none/file_hole.ubi -- bptree --show-filenode
+#
+# INO         1                    [40755]
+# DENT ->000001 hash:  0x0856419d  [inode=66  file 1.bin]
+# DENT ->000001 hash:  0x16856c8c  [inode=65  file hole.bin]
+# INO        65                    [100644]
+# DATA       65 block: 00000256    [size=4096  aab39296fb5be5a2(.....[..)]
+# DATA       65 block: 00000257    [size=4096  187b7cffd4d4a869(.{|....i)]
+# DATA       65 block: 00000258    [size=4096  487557d618e3214d(HuW...!M)]
+# DATA       65 block: 00000259    [size=2781  aa32b9203758291d(.2. 7X).)]
+function file_hole() {
+    (
+        cd $1
+
+        gen_random_file 1.bin 8192 16384
+        dd if=1.bin of=hole.bin bs=1M seek=1
+    )
+}
+
+# ./imgeditor tests/fs/ubi_none/more_hole.ubi -- bptree --show-filenode
+#
+# INO         1                    [40755]
+# DENT ->000001 hash:  0x16856c8c  [inode=66  file hole.bin]
+# INO        66                    [100644]
+# DATA       66 block: 00000128    [size=4096  55b1ad21f38db282(U..!....)]
+# DATA       66 block: 00000129    [size=4096  0eca9132282b8060(...2(+.`)]
+# DATA       66 block: 00000130    [size=4096  6ef7b8bbf57a054e(n....z.N)]
+# DATA       66 block: 00000131    [size=4096  1acc67a21f7615f4(..g..v..)]
+# DATA       66 block: 00000384    [size=4096  55b1ad21f38db282(U..!....)]
+# DATA       66 block: 00000385    [size=4096  0eca9132282b8060(...2(+.`)]
+# DATA       66 block: 00000386    [size=4096  6ef7b8bbf57a054e(n....z.N)]
+# DATA       66 block: 00000387    [size=4096  1acc67a21f7615f4(..g..v..)]
+function more_hole() {
+    (
+        cd $1
+
+        gen_random_file rand.bin 8192 16384
+        dd if=/dev/zero of=hole.bin bs=1M count=2
+
+        dd if=rand.bin of=hole.bin bs=512k seek=1 conv=notrunc
+        dd if=rand.bin of=hole.bin bs=512k seek=3 conv=notrunc
+    )
+}
+
 imgeditor_unpack_ubi_test single_file 16MiB || exit $?
 imgeditor_unpack_ubi_test simple_abc 16MiB || exit $?
 imgeditor_unpack_ubi_test many_files 16MiB || exit $?
@@ -212,3 +257,9 @@ imgeditor_unpack_ubi_test symlink_60 16MiB || exit $?
 imgeditor_unpack_ubi_test long_link_target_name 16MiB || exit $?
 imgeditor_unpack_ubi_test large_file 64MiB || exit $?
 imgeditor_unpack_ubi_test zero_1MiB 16MiB || exit $?
+imgeditor_unpack_ubi_test file_hole 16MiB || exit $?
+
+# this test can not work if lzo compression is enabled.
+if [ -z "${UBI_COMPRESS}" ] ; then
+    imgeditor_unpack_ubi_test more_hole 16MiB || exit $?
+fi

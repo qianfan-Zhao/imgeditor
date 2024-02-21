@@ -1748,26 +1748,26 @@ static struct ubifs_ino_node *
 	return (struct ubifs_ino_node *)ch;
 }
 
-static struct ubi_bptree_leaf_node *
-	ubi_bptree_find_data_block(struct ubi_editor_private_data *p,
-				   uint32_t ino, uint32_t blk_idx)
-{
-	return ubi_bptree_find(p->root, UBIFS_DATA_KEY, ino, blk_idx, blk_idx);
-}
-
+/*
+ * Read a data node where the @min_blk_idx <= blk_idx <= @max_blk_idx,
+ * And save it's blk_idx to @ret_blk_idx.
+ */
 static struct ubifs_data_node *
 	ubi_alloc_read_data_node(struct ubi_editor_private_data *p,
-				 uint32_t ino, uint32_t blk_idx, void **ret_peb)
+				 uint32_t ino, uint32_t min_blk_idx,
+				 uint32_t max_blk_idx,
+				 uint32_t *ret_blk_idx,
+				 void **ret_peb)
 {
 	struct ubi_bptree_leaf_node *leaf;
 	struct ubifs_ch *ch;
 
-	leaf = ubi_bptree_find_data_block(p, ino, blk_idx);
-	if (!leaf) {
-		fprintf(stderr, "Error: can not found UBIFS_DATA_NODE %u+%u\n",
-			ino, blk_idx);
+	leaf = ubi_bptree_find(p->root, UBIFS_DATA_KEY, ino, min_blk_idx,
+				max_blk_idx);
+	if (!leaf)
 		return NULL;
-	}
+
+	*ret_blk_idx = leaf->key1 & UBIFS_S_KEY_BLOCK_MASK;
 
 	ch = ubi_alloc_read_ch(p, leaf->self_lnum, leaf->self_offs, ret_peb);
 	if (!ch)
@@ -1955,6 +1955,7 @@ static int ubi_unpack_file(struct ubi_editor_private_data *p, uint32_t ino,
 	void *inode_peb;
 	uint32_t data_block = 0;
 	uint64_t filesz, n = 0;
+	uint8_t zero = 0;
 	int fd;
 
 	inode = ubi_alloc_read_inode(p, ino, &inode_peb);
@@ -1975,33 +1976,28 @@ static int ubi_unpack_file(struct ubi_editor_private_data *p, uint32_t ino,
 	if (filesz == 0)
 		goto done;
 
-	/* The ubifs will not generate data block for all zero file */
-	if (!ubi_bptree_find_data_block(p, ino, 0)) {
-		uint8_t zero = 0;
-
-		lseek64(fd, filesz - sizeof(zero), SEEK_SET);
-		write(fd, &zero, sizeof(zero));
-
-		goto done;
-	}
+	/* fill the file with zero */
+	lseek64(fd, filesz - sizeof(zero), SEEK_SET);
+	write(fd, &zero, sizeof(zero));
 
 	while (n < filesz) {
 		struct ubifs_data_node *dnode;
 		void *data_peb;
-		uint32_t chunk_sz;
+		uint32_t chunk_sz, blk_idx;
 
-		dnode = ubi_alloc_read_data_node(p, ino, data_block, &data_peb);
-		if (!dnode) {
-			fprintf(stderr, "Error: unpack file %s failed\n",
-				filename);
-			return -1;
-		}
+		dnode = ubi_alloc_read_data_node(p, ino, data_block, 0xffffffff,
+						 &blk_idx, &data_peb);
+		/* all data node are unpacked, the remain is hole */
+		if (!dnode)
+			break;
 
 		chunk_sz = le32_to_cpu(dnode->size);
+		n = blk_idx * UBIFS_BLOCK_SIZE;
+		lseek64(fd, n, SEEK_SET);
 
 		write(fd, dnode->data, chunk_sz);
+		data_block = blk_idx + 1;
 		n += chunk_sz;
-		data_block++;
 
 		free(data_peb);
 	}
