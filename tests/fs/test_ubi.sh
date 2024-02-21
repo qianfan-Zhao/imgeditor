@@ -120,6 +120,17 @@ function many_files() {
     )
 }
 
+function random_length_files() {
+    (
+        cd $1
+
+        mkdir -p a b c
+        for i in $(seq 1 20) ; do
+            gen_random_file_silence a/$i.bin 1024 16384
+        done
+    )
+}
+
 function many_longname_files() {
     (
         cd $1
@@ -180,6 +191,7 @@ function large_file() {
 imgeditor_unpack_ubi_test single_file 16MiB || exit $?
 imgeditor_unpack_ubi_test simple_abc 16MiB || exit $?
 imgeditor_unpack_ubi_test many_files 16MiB || exit $?
+imgeditor_unpack_ubi_test random_length_files 16MiB || exit $?
 imgeditor_unpack_ubi_test many_longname_files 64MiB || exit $?
 imgeditor_unpack_ubi_test simple_link 16MiB || exit $?
 imgeditor_unpack_ubi_test symlink_60 16MiB || exit $?
