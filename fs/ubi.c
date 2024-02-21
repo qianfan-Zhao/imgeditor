@@ -1663,6 +1663,24 @@ static int ubi_do_node(struct ubi_editor_private_data *p, int argc, char **argv)
 }
 
 static struct ubi_bptree_leaf_node *
+ubi_bptree_branch_find_leaf(struct ubi_bptree_branch *b, uint64_t key_min,
+			    uint64_t key_max)
+{
+	for (int i = 0; i < b->child_cnt; i++) {
+		struct ubi_bptree_leaf_node *leaf = &b->child_leafs[i];
+		uint64_t key = make_u64(leaf->key0, leaf->key1);
+
+		if (key_min == key_max && key_min == key)
+			return leaf;
+
+		if (key >= key_min && key <= key_max)
+			return leaf;
+	}
+
+	return NULL;
+}
+
+static struct ubi_bptree_leaf_node *
 ubi_bptree_find(struct ubi_bptree_branch *root, uint8_t keytype, uint32_t key0,
 		uint32_t hash_min, uint32_t hash_max)
 {
@@ -1670,8 +1688,12 @@ ubi_bptree_find(struct ubi_bptree_branch *root, uint8_t keytype, uint32_t key0,
 	uint64_t key_max = ubi_leaf_make_key(keytype, key0, hash_max);
 	struct ubi_bptree_branch *b;
 
+	if (list_empty(&root->child_branches))
+		return ubi_bptree_branch_find_leaf(root, key_min, key_max);
+
 	list_for_each_entry(b, &root->child_branches, head,
 			    struct ubi_bptree_branch) {
+		struct ubi_bptree_leaf_node *leaf;
 		uint64_t branch_min, branch_max;
 
 		branch_min = ubi_bptree_branch_min_key(b);
@@ -1690,16 +1712,9 @@ ubi_bptree_find(struct ubi_bptree_branch *root, uint8_t keytype, uint32_t key0,
 					       hash_min, hash_max);
 		}
 
-		for (int i = 0; i < b->child_cnt; i++) {
-			struct ubi_bptree_leaf_node *leaf = &b->child_leafs[i];
-			uint64_t key = make_u64(leaf->key0, leaf->key1);
-
-			if (key_min == key_max && key_min == key)
-				return leaf;
-
-			if (key >= key_min && key <= key_max)
-				return leaf;
-		}
+		leaf = ubi_bptree_branch_find_leaf(b, key_min, key_max);
+		if (leaf)
+			return leaf;
 	}
 
 	return NULL;

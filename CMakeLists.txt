@@ -106,6 +106,7 @@ if (ENABLE_FS)
         list(APPEND tests
                 fs/ext4/test.sh
                 fs/ext2/test.sh
+                fs/ubi/test.sh
         )
 endif()
 
