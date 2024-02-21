@@ -1712,7 +1712,7 @@ static struct ubifs_ino_node *
 	struct ubi_bptree_leaf_node *leaf;
 	struct ubifs_ch *ch;
 
-	leaf = ubi_bptree_find(p->root, UBIFS_INO_NODE, ino, 0, 0);
+	leaf = ubi_bptree_find(p->root, UBIFS_INO_KEY, ino, 0, 0);
 	if (!leaf) {
 		fprintf(stderr, "Error: can not found UBIFS_INO_NODE %u\n",
 			ino);
@@ -1731,6 +1731,34 @@ static struct ubifs_ino_node *
 	}
 
 	return (struct ubifs_ino_node *)ch;
+}
+
+static struct ubifs_data_node *
+	ubi_alloc_read_data_node(struct ubi_editor_private_data *p,
+				 uint32_t ino, uint32_t blk_idx, void **ret_peb)
+{
+	struct ubi_bptree_leaf_node *leaf;
+	struct ubifs_ch *ch;
+
+	leaf = ubi_bptree_find(p->root, UBIFS_DATA_KEY, ino, blk_idx, blk_idx);
+	if (!leaf) {
+		fprintf(stderr, "Error: can not found UBIFS_DATA_NODE %u + %u\n",
+			ino, blk_idx);
+		return NULL;
+	}
+
+	ch = ubi_alloc_read_ch(p, leaf->self_lnum, leaf->self_offs, ret_peb);
+	if (!ch)
+		return NULL;
+
+	if (ch->node_type != UBIFS_DATA_NODE) {
+		fprintf(stderr, "Error: node %u:%u is not DATA_NODE\n",
+			leaf->self_lnum, leaf->self_offs);
+		free(*ret_peb);
+		return NULL;
+	}
+
+	return (struct ubifs_data_node *)ch;
 }
 
 static int ubi_list_file(struct ubi_editor_private_data *p, uint32_t ino)
@@ -1781,6 +1809,7 @@ static int ubi_list_dent(struct ubi_editor_private_data *p, uint32_t ino,
 	while (1) {
 		struct ubifs_dent_node *dent = NULL;
 		struct ubifs_ch *ch;
+		uint32_t inum;
 		void *peb;
 		int ret = -1;
 
@@ -1808,9 +1837,11 @@ static int ubi_list_dent(struct ubi_editor_private_data *p, uint32_t ino,
 			return ret;
 		}
 
+		inum = (uint32_t)le64_to_cpu(dent->inum);
+
 		for (int i = 0; i < indent; i++)
 			printf("|   ");
-		printf("|-- #%08d:", (uint32_t)le64_to_cpu(dent->inum));
+		printf("|-- #%08d:", inum);
 		printf(" %-10s", ubifs_itype_list_names[dent->type]);
 		printf(" %s", dent->name);
 
@@ -1822,13 +1853,13 @@ static int ubi_list_dent(struct ubi_editor_private_data *p, uint32_t ino,
 		switch (dent->type) {
 		case UBIFS_ITYPE_DIR:
 			printf("\n");
-			ret = ubi_list_dent(p, dent->inum, indent + 1);
+			ret = ubi_list_dent(p, inum, indent + 1);
 			break;
 		case UBIFS_ITYPE_REG:
-			ret = ubi_list_file(p, dent->inum);
+			ret = ubi_list_file(p, inum);
 			break;
 		case UBIFS_ITYPE_LNK:
-			ret = ubi_list_link(p, dent->inum);
+			ret = ubi_list_link(p, inum);
 			break;
 		default:
 			printf("\n");
@@ -1895,6 +1926,175 @@ static int ubi_main(void *private_data, int fd, int argc, char **argv)
 	return ubi_list(p);
 }
 
+static int ubi_unpack_file(struct ubi_editor_private_data *p, uint32_t ino,
+			   const char *filename)
+{
+	struct ubifs_ino_node *inode;
+	void *inode_peb;
+	uint32_t data_block = 0;
+	uint64_t filesz, n = 0;
+	int fd;
+
+	inode = ubi_alloc_read_inode(p, ino, &inode_peb);
+	if (!inode)
+		return -1;
+
+	fd = fileopen(filename, O_RDWR | O_CREAT | O_TRUNC,
+			le32_to_cpu(inode->mode));
+	if (fd < 0) {
+		free(inode_peb);
+		return -1;
+	}
+
+	filesz = le64_to_cpu(inode->size);
+	free(inode_peb);
+	inode_peb = NULL;
+
+	while (n < filesz) {
+		struct ubifs_data_node *dnode;
+		void *data_peb;
+		uint32_t chunk_sz;
+
+		dnode = ubi_alloc_read_data_node(p, ino, data_block, &data_peb);
+		if (!dnode)
+			return -1;
+
+		chunk_sz = le32_to_cpu(dnode->size);
+
+		write(fd, dnode->data, chunk_sz);
+		n += chunk_sz;
+		data_block++;
+
+		free(data_peb);
+	}
+
+	return 0;
+}
+
+static int ubi_unpack_link(struct ubi_editor_private_data *p, uint32_t ino,
+			   const char *symlink_name)
+{
+	char target[1024] = { 0 };
+	struct ubifs_ino_node *inode;
+	void *peb;
+
+	inode = ubi_alloc_read_inode(p, ino, &peb);
+	if (!inode)
+		return -1;
+
+	snprintf(target, sizeof(target), "%.*s",
+		(int)le32_to_cpu(inode->data_len),
+		(const char *)inode->data);
+	free(peb);
+	inode = NULL;
+
+	unlink(symlink_name);
+	symlink(target, symlink_name);
+	return 0;
+}
+
+static int ubi_unpack_dent(struct ubi_editor_private_data *p, uint32_t ino,
+			   const char *parent_dir)
+{
+	struct ubi_bptree_leaf_node *leaf;
+	uint32_t hash_min = 0;
+
+	while (1) {
+		char filename[1024] = { 0 };
+		struct ubifs_dent_node *dent = NULL;
+		struct ubifs_ch *ch;
+		uint32_t inum;
+		void *peb;
+		int ret = -1;
+
+		leaf = ubi_bptree_find(p->root, UBIFS_DENT_KEY, ino,
+				       hash_min, 0xffffffff);
+		if (!leaf)
+			break;
+
+		ch = ubi_alloc_read_ch(p, leaf->self_lnum, leaf->self_offs, &peb);
+		if (!ch)
+			return ret;
+
+		if (ch->node_type != UBIFS_DENT_NODE) {
+			fprintf(stderr, "Error: UBI node is not dent (%u:%u)\n",
+				leaf->self_lnum, leaf->self_offs);
+			free(peb);
+			return ret;
+		}
+
+		dent = (struct ubifs_dent_node *)ch;
+		if (dent->type >= UBIFS_ITYPES_CNT) {
+			fprintf(stderr, "Error: DENT node has bad type(%u:%u)\n",
+				leaf->self_lnum, leaf->self_offs);
+			free(peb);
+			return ret;
+		}
+
+		if ((leaf->key1 & UBIFS_S_KEY_BLOCK_MASK) == UBIFS_S_KEY_BLOCK_MASK)
+			hash_min = UBIFS_S_KEY_BLOCK_MASK;
+		else
+			hash_min = (leaf->key1 + 1) & UBIFS_S_KEY_BLOCK_MASK;
+
+		snprintf(filename, sizeof(filename), "%s/%s",
+			parent_dir, (const char *)dent->name);
+
+		inum = (uint32_t)le64_to_cpu(dent->inum);
+
+		switch (dent->type) {
+		case UBIFS_ITYPE_DIR: {
+			struct ubifs_ino_node *inode;
+			void *inode_peb;
+			int mode;
+
+			inode = ubi_alloc_read_inode(p, dent->inum, &inode_peb);
+			if (!inode) {
+				fprintf(stderr, "Error: read inode %d of dent "
+					"%s failed\n", inum, filename);
+				ret = -1;
+				break;
+			}
+
+			mode = le32_to_cpu(inode->mode);
+			free(inode_peb);
+
+			mkdir(filename, mode);
+			ret = ubi_unpack_dent(p, inum, filename);
+			break;
+		}
+		case UBIFS_ITYPE_REG:
+			ret = ubi_unpack_file(p, inum, filename);
+			break;
+		case UBIFS_ITYPE_LNK:
+			ret = ubi_unpack_link(p, inum, filename);
+			break;
+		default:
+			fprintf(stderr, "Error: unpack %s failed, unsupported "
+				"type %s\n",
+				filename,
+				ubifs_itype_short_names[dent->type]);
+			ret = -1;
+			break;
+		}
+
+		/* peb need free after we do not touch dent anymore */
+		free(peb);
+
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int ubi_unpack(void *private_data, int fd, const char *outdir,
+		      int argc, char **argv)
+{
+	struct ubi_editor_private_data *p = private_data;
+
+	return ubi_unpack_dent(p, 1 /* root ino */, outdir);
+}
+
 static struct imgeditor ubi_editor = {
 	.name			= "ubi",
 	.descriptor		= "ubi image editor",
@@ -1905,6 +2105,7 @@ static struct imgeditor ubi_editor = {
 	.init			= ubi_editor_init,
 	.detect			= ubi_detect,
 	.list			= ubi_main,
+	.unpack			= ubi_unpack,
 	.exit			= ubi_editor_exit,
 };
 REGISTER_IMGEDITOR(ubi_editor);
