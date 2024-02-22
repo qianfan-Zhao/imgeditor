@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include "imgeditor.h"
 #include "string_helper.h"
+#include "minilzo.h"
 
 const char *smart_format_size(uint64_t byte_addr, char *buf, size_t bufsz)
 {
@@ -487,6 +488,8 @@ int main(int argc, char *argv[])
 	int search_mode = 0, action = ACTION_LIST; /* default action */
 	int fd = -1;
 	int ret = -1;
+
+	lzo_init();
 
 	/* args after '--' will passed to the subcommand */
 	for (main_argc = 0; main_argc < argc; main_argc++, sub_argc--) {

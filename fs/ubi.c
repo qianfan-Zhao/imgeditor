@@ -14,6 +14,7 @@
 #include "imgeditor.h"
 #include "ubi.h"
 #include "structure.h"
+#include "minilzo.h"
 
 #define PRINT_LEVEL0					"%-30s: "
 #define PRINT_LEVEL1					"    %-26s: "
@@ -1783,6 +1784,64 @@ static struct ubifs_data_node *
 	return (struct ubifs_data_node *)ch;
 }
 
+static ssize_t ubi_data_node_decompress_none(struct ubifs_data_node *dnode,
+					     uint8_t *decompress_buf,
+					     size_t decompress_buf_sz)
+{
+	size_t decompress_sz = le32_to_cpu(dnode->size);
+
+	if (decompress_sz > decompress_buf_sz)
+		decompress_sz = decompress_buf_sz;
+
+	memcpy(decompress_buf, dnode->data, decompress_sz);
+	return decompress_sz;
+}
+
+static ssize_t ubi_data_node_decompress_lzo(struct ubifs_data_node *dnode,
+					    uint8_t *decompress_buf,
+					    size_t decompress_buf_sz)
+{
+	lzo_uint decompress_sz = decompress_buf_sz;
+	lzo_uint compress_sz;
+	int ret;
+
+	compress_sz = le32_to_cpu(dnode->ch.len) - UBIFS_DATA_NODE_SZ;
+
+	ret = lzo1x_decompress_safe(dnode->data, compress_sz,
+				    decompress_buf, &decompress_sz,
+				    NULL);
+	if (ret < 0)
+		return ret;
+
+	return decompress_sz;
+}
+
+/*
+ * Decompress ubifs data node to @decompress_buf, and the @decompress_buf_sz
+ * should at least UBIFS_BLOCK_SIZE.
+ *
+ * Return error code or the actually decompress size.
+ */
+static ssize_t ubi_data_node_decompress(struct ubifs_data_node *dnode,
+					uint8_t *decompress_buf,
+					size_t decompress_buf_sz)
+{
+	switch (le16_to_cpu(dnode->compr_type)) {
+	case UBIFS_COMPR_NONE:
+		return ubi_data_node_decompress_none(dnode, decompress_buf,
+						     decompress_buf_sz);
+	case UBIFS_COMPR_LZO:
+		return ubi_data_node_decompress_lzo(dnode, decompress_buf,
+						    decompress_buf_sz);
+	default:
+		fprintf(stderr, "Error: unsupported compress type: %d\n",
+			le16_to_cpu(dnode->compr_type));
+		break;
+	}
+
+	return -1;
+}
+
 static int ubi_list_file(struct ubi_editor_private_data *p, uint32_t ino)
 {
 	struct ubifs_ino_node *inode;
@@ -1926,6 +1985,67 @@ static int ubi_do_inode(struct ubi_editor_private_data *p, int argc, char **argv
 	return 0;
 }
 
+static int ubi_do_dnode(struct ubi_editor_private_data *p, int no_decompress,
+			int argc, char **argv)
+{
+	struct ubifs_data_node *dnode;
+	uint32_t act_blkno;
+	int ino, blkno;
+	int ret = 0;
+	void *peb;
+
+	if (argc != 3) {
+		fprintf(stderr, "Usage: ubi dnode #ino #blk\n");
+		return -1;
+	}
+
+	ino = (int)strtol(argv[1], NULL, 10);
+	if (ino <= 0) {
+		fprintf(stderr, "Error: bad #ino number\n");
+		return -1;
+	}
+
+	blkno = (int)strtol(argv[2], NULL, 10);
+	if (blkno < 0) {
+		fprintf(stderr, "Error: bad #blk number\n");
+		return -1;
+	}
+
+	dnode = ubi_alloc_read_data_node(p, ino, blkno, blkno,
+					 &act_blkno, &peb);
+	if (!dnode) {
+		fprintf(stderr, "Error: data node is not found\n");
+		return -1;
+	}
+
+	printf("UBIFS_DATA_NODE: DATA %d block %u\n", ino, act_blkno);
+	structure_print(PRINT_LEVEL0, &dnode->ch, structure_ubifs_ch);
+	structure_print(PRINT_LEVEL1, dnode, structure_ubifs_data_node);
+
+	if (no_decompress) {
+		hexdump(dnode->data,
+			le32_to_cpu(dnode->ch.len) - UBIFS_DATA_NODE_SZ,
+			0);
+	} else {
+		uint8_t decompress[UBIFS_BLOCK_SIZE];
+		int r;
+
+		r = ubi_data_node_decompress(dnode, decompress,
+					     sizeof(decompress));
+		if (r < 0) {
+			fprintf(stderr, "Error: decompress failed(%d)\n", r);
+			ret = r;
+			goto done;
+		}
+
+		hexdump(decompress, r, 0);
+	}
+
+done:
+	free(peb);
+	return ret;
+}
+
 static int ubi_main(void *private_data, int fd, int argc, char **argv)
 {
 	struct ubi_editor_private_data *p = private_data;
@@ -1941,6 +2061,10 @@ static int ubi_main(void *private_data, int fd, int argc, char **argv)
 			return ubi_do_node(p, argc, argv);
 		else if (!strcmp(argv[0], "inode"))
 			return ubi_do_inode(p, argc, argv);
+		else if (!strcmp(argv[0], "dnode"))
+			return ubi_do_dnode(p, 0, argc, argv);
+		else if (!strcmp(argv[0], "dnode.raw"))
+			return ubi_do_dnode(p, 1, argc, argv);
 		else if (!strcmp(argv[0], "bptree"))
 			return ubi_do_bptree(p, argc, argv);
 	}

@@ -4,6 +4,7 @@ project(imgeditor C)
 include_directories(.)
 include_directories(libs/cJSON)
 include_directories(libs/GmSSL/include)
+include_directories(libs/minilzo)
 
 set(src
         main.c
@@ -21,6 +22,7 @@ set(src
         libs/GmSSL/src/sha1.c
         libs/GmSSL/src/sha256.c
         libs/GmSSL/src/sha512.c
+        libs/minilzo/minilzo.c
 )
 
 set(tests)
