@@ -2080,6 +2080,7 @@ static int ubi_unpack_file(struct ubi_editor_private_data *p, uint32_t ino,
 	uint32_t data_block = 0;
 	uint64_t filesz, n = 0;
 	uint8_t zero = 0;
+	int ret = 0;
 	int fd;
 
 	inode = ubi_alloc_read_inode(p, ino, &inode_peb);
@@ -2108,6 +2109,8 @@ static int ubi_unpack_file(struct ubi_editor_private_data *p, uint32_t ino,
 		struct ubifs_data_node *dnode;
 		void *data_peb;
 		uint32_t chunk_sz, blk_idx;
+		uint8_t decompress[UBIFS_BLOCK_SIZE];
+		int r;
 
 		dnode = ubi_alloc_read_data_node(p, ino, data_block, 0xffffffff,
 						 &blk_idx, &data_peb);
@@ -2115,11 +2118,29 @@ static int ubi_unpack_file(struct ubi_editor_private_data *p, uint32_t ino,
 		if (!dnode)
 			break;
 
+		r = ubi_data_node_decompress(dnode, decompress,
+					     sizeof(decompress));
+		if (r < 0) {
+			fprintf(stderr, "Error: decompress data node DATA %u "
+				"block %u failed(%d)\n",
+				ino, blk_idx, r);
+			ret = r;
+			free(data_peb);
+			break;
+		} else if ((unsigned)r != le32_to_cpu(dnode->size)) {
+			fprintf(stderr, "Error: decompress data node DATA %u "
+				"block %u failed: decompress_sz %d != %u\n",
+				ino, blk_idx, r, le32_to_cpu(dnode->size));
+			ret = -1;
+			free(data_peb);
+			break;
+		}
+
 		chunk_sz = le32_to_cpu(dnode->size);
 		n = blk_idx * UBIFS_BLOCK_SIZE;
 		lseek64(fd, n, SEEK_SET);
 
-		write(fd, dnode->data, chunk_sz);
+		write(fd, decompress, chunk_sz);
 		data_block = blk_idx + 1;
 		n += chunk_sz;
 
@@ -2128,7 +2149,7 @@ static int ubi_unpack_file(struct ubi_editor_private_data *p, uint32_t ino,
 
 done:
 	close(fd);
-	return 0;
+	return ret;
 }
 
 static int ubi_unpack_link(struct ubi_editor_private_data *p, uint32_t ino,

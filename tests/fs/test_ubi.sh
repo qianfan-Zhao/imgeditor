@@ -247,6 +247,15 @@ function more_hole() {
     )
 }
 
+# This file will be compressed.
+function simple_txt() {
+    for i in $(seq 1 100) ; do
+        echo "hello world!" >> $1/1.txt
+    done
+
+    cp ../test_ubi.sh $1
+}
+
 imgeditor_unpack_ubi_test single_file 16MiB || exit $?
 imgeditor_unpack_ubi_test simple_abc 16MiB || exit $?
 imgeditor_unpack_ubi_test many_files 16MiB || exit $?
@@ -258,8 +267,9 @@ imgeditor_unpack_ubi_test long_link_target_name 16MiB || exit $?
 imgeditor_unpack_ubi_test large_file 64MiB || exit $?
 imgeditor_unpack_ubi_test zero_1MiB 16MiB || exit $?
 imgeditor_unpack_ubi_test file_hole 16MiB || exit $?
+imgeditor_unpack_ubi_test more_hole 16MiB || exit $?
 
-# this test can not work if lzo compression is enabled.
-if [ -z "${UBI_COMPRESS}" ] ; then
-    imgeditor_unpack_ubi_test more_hole 16MiB || exit $?
+# Test decompress
+if [ -n "${UBI_COMPRESS}" ] ; then
+    imgeditor_unpack_ubi_test simple_txt 16MiB || exit $?
 fi
