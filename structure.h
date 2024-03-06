@@ -35,6 +35,14 @@ struct structure_item {
 	.name = NULL,							\
 }
 
+enum structure_endian {
+	STRUCTURE_ENDIAN_FORCE_NONE,
+	STRUCTURE_ENDIAN_FORCE_LE,
+	STRUCTURE_ENDIAN_FORCE_BE,
+};
+
+enum structure_endian structure_force_endian(enum structure_endian set);
+
 void structure_print_name(const char *print_name_fmt, const char *name);
 
 void structure_item_print_unsigned(const char *print_name_fmt, const char *name,

@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include "imgeditor.h"
 #include "string_helper.h"
+#include "structure.h"
 #include "minilzo.h"
 
 const char *smart_format_size(uint64_t byte_addr, char *buf, size_t bufsz)
@@ -254,6 +255,8 @@ static struct img_location *imgeditor_search_buf(int fd, off64_t file_offset,
 
 			if (img_offset + (int)editor->header_size >= filelength(fd))
 				continue;
+
+			structure_force_endian(STRUCTURE_ENDIAN_FORCE_NONE);
 
 			memset(editor->private_data, 0,
 				editor->private_data_size);

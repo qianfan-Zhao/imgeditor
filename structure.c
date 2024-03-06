@@ -6,6 +6,30 @@
 #include "json_helper.h"
 #include "string_helper.h"
 
+static enum structure_endian forced_endian = STRUCTURE_ENDIAN_FORCE_NONE;
+
+enum structure_endian structure_force_endian(enum structure_endian set)
+{
+	enum structure_endian prev = forced_endian;
+
+	forced_endian = set;
+	return prev;
+}
+
+static int structure_endian_prefer_le(int le)
+{
+	switch (forced_endian) {
+	case STRUCTURE_ENDIAN_FORCE_BE:
+		return 0;
+	case STRUCTURE_ENDIAN_FORCE_LE:
+		return 1;
+	default:
+		break;
+	}
+
+	return le;
+}
+
 void structure_print_name(const char *print_name_fmt, const char *name)
 {
 	char print_fmt[64];
@@ -72,6 +96,8 @@ static void _structure_item_print_unsigned(const char *print_name_fmt,
 {
 	char s[64];
 
+	le = structure_endian_prefer_le(le);
+
 	structure_print_name(print_name_fmt, name);
 	snprintf_unsigned(s, sizeof(s), le, addr, sz);
 	printf("%s\n", s);
@@ -97,6 +123,8 @@ static int _structure_item_save_json_unsigned(cJSON *json, const char *name,
 {
 	char s[64];
 
+	le = structure_endian_prefer_le(le);
+
 	snprintf_unsigned(s, sizeof(s), le, addr, sz);
 
 	return json_add_string_value(json, name, s);
@@ -120,6 +148,8 @@ static void _structure_item_print_xunsigned(const char *print_name_fmt,
 					    const void *addr, size_t sz)
 {
 	char s[64];
+
+	le = structure_endian_prefer_le(le);
 
 	structure_print_name(print_name_fmt, name);
 	snprintf_xunsigned(s, sizeof(s), le, addr, sz);
@@ -145,6 +175,8 @@ static int _structure_item_save_json_xunsigned(cJSON *json, const char *name,
 					       const void *addr, size_t sz)
 {
 	char s[64];
+
+	le = structure_endian_prefer_le(le);
 
 	snprintf_xunsigned(s, sizeof(s), le, addr, sz);
 
@@ -204,6 +236,8 @@ static int _structure_item_load_set_json_value(cJSON *json, const char *name,
 {
 	uint64_t un;
 	int ret;
+
+	le = structure_endian_prefer_le(le);
 
 	ret = _structure_item_load_json_unsigned(json, name, base, &un);
 	if (ret < 0)
@@ -306,6 +340,8 @@ static int _structure_item_save_json_n32_array(cJSON *json, const char *name,
 	cJSON *array = cJSON_CreateArray();
 	const uint32_t *n32 = addr;
 
+	le = structure_endian_prefer_le(le);
+
 	if (!array)
 		return -1;
 
@@ -335,6 +371,8 @@ static int _structure_item_load_json_n32_array(cJSON *json, const char *name,
 	cJSON *item, *array = cJSON_GetObjectItem(json, name);
 	size_t i = 0, max_items = sz / sizeof(uint32_t);
 	uint32_t *u32 = addr;
+
+	le = structure_endian_prefer_le(le);
 
 	if (!array || !cJSON_IsArray(array))
 		return -1;
@@ -416,6 +454,8 @@ static void _structure_item_print_n32_array(const char *print_name_fmt,
 					    const void *addr, size_t sz)
 {
 	const uint32_t *p_u32 = addr;
+
+	le = structure_endian_prefer_le(le);
 
 	structure_print_name(print_name_fmt, name);
 	for (size_t i = 0; i < sz / sizeof(uint32_t); i++)
