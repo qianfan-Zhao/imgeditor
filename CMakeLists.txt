@@ -53,6 +53,7 @@ option(ENABLE_FDT               "Enable flatted device tree(dtb)"       ON)
 option(ENABLE_FS                "Enable filesystem images"              ON)
 option(ENABLE_TIMEZONE          "Enable timezone tzfile"                ON)
 option(ENABLE_UBOOT             "Enable U-Boot images"                  ON)
+option(ENABLE_PCAP              "Enable tcpdump/wireshark pcap file"    ON)
 
 if (ENABLE_ALLWINNER)
         list(APPEND src
@@ -123,6 +124,15 @@ if (ENABLE_UBOOT)
         list(APPEND tests
                 uboot/env/test.sh
         )
+endif()
+
+if (ENABLE_PCAP)
+        list(APPEND src
+                pcap/pcap_linktype.c
+                pcap/pcapng.c)
+        include_directories(pcap)
+
+        list(APPEND tests pcap/test.sh)
 endif()
 
 add_executable(imgeditor ${src})
