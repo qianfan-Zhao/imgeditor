@@ -1,0 +1,36 @@
+/dts-v1/;
+/ {
+    description = "FIT Image Source File";
+    images {
+        kernel {
+            data = /incbin/("./kernel.bin");
+            type = "kernel";
+            arch = "arm64";
+            os = "linux";
+            compression = "gzip";
+            entry = <0x00200000>;
+            load = <0x00200000>;
+            hash {
+                algo = "sha256";
+            };
+        };
+        ramdisk {
+            data = /incbin/("./ramdisk.bin");
+            type = "ramdisk";
+            arch = "arm64";
+            os = "linux";
+            compression = "none";
+            load = <0x0a200000>;
+            hash {
+                algo = "sha256";
+            };
+        };
+    };
+    configurations {
+        default = "conf";
+        conf {
+            kernel = "kernel";
+            ramdisk = "ramdisk";
+        };
+    };
+};

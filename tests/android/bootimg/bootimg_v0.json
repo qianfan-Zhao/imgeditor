@@ -1,0 +1,13 @@
+{
+	"kernel_addr":	"0x40008000",
+	"ramdisk_addr":	"0x41000000",
+	"second_addr":	"0x40f00000",
+	"tags_addr":	"0x40000100",
+	"page_size":	"2048",
+	"header_version":	"0x00000000",
+	"os_version":	"0x00000000",
+	"name":	"sun8i_arm",
+	"cmdline":	"",
+	"extra_cmdline":	"",
+	"files":	["kernel.bin", "ramdisk.bin"]
+}
