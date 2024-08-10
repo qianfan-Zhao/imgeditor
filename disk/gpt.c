@@ -321,6 +321,25 @@ struct gpt_editor_private_data {
 	struct gpt_write_partition_pdata wpdata;
 };
 
+static struct gpt_entry *gpt_find_part(struct gpt_editor_private_data *p,
+				       const char *part_name)
+{
+	for (uint32_t i = 0; i < p->num_partition_entries; i++) {
+		struct gpt_entry *e = &p->partitions[i];
+		uint8_t entry_name[sizeof(e->partition_name)];
+		char name[128] = { 0 };
+
+		memcpy(entry_name, e->partition_name, sizeof(entry_name));
+		gpt_partition_name_to_char((const __le16 *)entry_name,
+					   name, sizeof(name));
+
+		if (!strcmp(name, part_name))
+			return e;
+	}
+
+	return NULL;
+}
+
 static void gpt_exit(void *private_data)
 {
 	struct gpt_editor_private_data *p = private_data;
@@ -885,6 +904,55 @@ static int gpt_list_partitions(struct gpt_editor_private_data *p,
 	return 0;
 }
 
+/* Save partition data to file.
+ * Usage peek part-name save-file
+ */
+static int gpt_peek_partition(struct gpt_editor_private_data *p, int fd,
+			      int argc, char **argv)
+{
+	int64_t n, total_length = filelength(fd);
+	const char *part_name, *save_file;
+	off64_t start, size;
+	struct gpt_entry *e;
+	int fd_peek;
+
+	if (argc != 3) {
+		fprintf(stderr, "Usage: peek part-name save-file\n");
+		return -1;
+	}
+
+	part_name = argv[1];
+	save_file = argv[2];
+	e = gpt_find_part(p, part_name);
+	if (!e) {
+		fprintf(stderr, "Error: part %s is not found\n", part_name);
+		return -1;
+	}
+
+	n = le64_to_cpu(e->ending_lba);
+	if (lba2sz(n) > total_length) {
+		fprintf(stderr, "Error: ending lba is overrange\n");
+		return -1;
+	}
+
+	fd_peek = fileopen(save_file, O_RDWR | O_CREAT, 0664);
+	if (fd_peek < 0) {
+		fprintf(stderr, "Error: create %s failed(%m)\n", save_file);
+		return fd;
+	}
+
+	start = le64_to_cpu(e->starting_lba);
+	start = lba2sz(start);
+
+	size = le64_to_cpu(e->ending_lba) - le64_to_cpu(e->starting_lba) + 1;
+	size = lba2sz(size);
+
+	dd64(fd, fd_peek, start, 0, size, NULL, NULL);
+	close(fd_peek);
+
+	return 0;
+}
+
 static int gpt_list_main(void *private_data, int fd, int argc, char **argv)
 {
 	struct gpt_editor_private_data *p = private_data;
@@ -898,6 +966,8 @@ static int gpt_list_main(void *private_data, int fd, int argc, char **argv)
 		return gpt_do_fdisk(p, argc, argv);
 	else if (!strcmp(argv[0], "partitions"))
 		return gpt_list_partitions(p, argc, argv);
+	else if (!strcmp(argv[0], "peek"))
+		return gpt_peek_partition(p, fd, argc, argv);
 
 	fprintf(stderr, "Error: unsupported command %s\n", argv[0]);
 	return -1;

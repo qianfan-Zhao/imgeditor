@@ -168,6 +168,10 @@ size_t dd(int fdsrc, int fddst, off_t offt_src, off_t offt_dst, size_t sz,
 	  void (*bufscan)(uint8_t *buf, size_t sz_buster, void *p),
 	  void *private_data);
 
+uint64_t dd64(int fdsrc, int fddst, off64_t offt_src, off64_t offt_dst, uint64_t sz,
+	      void (*bufscan)(uint8_t *buf, size_t sz_buster, void *p),
+	      void *private_data);
+
 void hexdump(const void *buf, size_t sz, unsigned long baseaddr);
 int xstring(const char *str, const char **endp, uint8_t *buf, size_t len);
 

@@ -12,12 +12,12 @@
 /* @fdsrc: the source file descriptor, negative number means copy from /dev/zero
  * @fddst: the target file descriptor, negative number means write to /dev/null
  */
-size_t dd(int fdsrc, int fddst, off_t offt_src, off_t offt_dst, size_t sz,
-	  void (*bufscan)(uint8_t *buf, size_t sz_buster, void *p),
-	  void *private_data)
+uint64_t dd64(int fdsrc, int fddst, off64_t offt_src, off64_t offt_dst, uint64_t sz,
+	      void (*bufscan)(uint8_t *buf, size_t sz_buster, void *p),
+	      void *private_data)
 {
 	size_t dd_max_bufsz = 1 << 20; /* 1MiB */
-	size_t n_copied_bytes = 0;
+	uint64_t n_copied_bytes = 0;
 	uint8_t *buffer;
 
 	if (fdsrc < 0 && fddst < 0)
@@ -63,4 +63,12 @@ size_t dd(int fdsrc, int fddst, off_t offt_src, off_t offt_dst, size_t sz,
 
 	free(buffer);
 	return n_copied_bytes;
+}
+
+size_t dd(int fd_src, int fd_dst, off_t offt_src, off_t offt_dst, size_t sz,
+	  void (*bufscan)(uint8_t *buf, size_t sz_buster, void *p),
+	  void *private_data)
+{
+	return (size_t)dd64(fd_src, fd_dst, offt_src, offt_dst, sz,
+			    bufscan, private_data);
 }
