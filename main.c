@@ -436,12 +436,14 @@ static void usage(void)
 	fprintf(stderr, "   --offset offset     set the offset location\n");
 	fprintf(stderr, "   --sector sector     set the offset location in sectors\n");
 	fprintf(stderr, "   --sector-size sz    set the sector's size, default is 512\n");
+	fprintf(stderr, "   --peek image        peek the binary location in image's @offset/@sector and save it\n");
 	fprintf(stderr, "   --unpack image      unpack all\n");
 	fprintf(stderr, "   --pack firmware-dir pack firmwares to a image file\n");
 	fprintf(stderr, "   --type type         select the image type\n");
 	fprintf(stderr, "-s --search            search supported images\n");
 	fprintf(stderr, "-v --verbose:          set the verbose mode\n");
 	fprintf(stderr, "   --plugin path       set the plugin library's path. Default %s\n", CONFIG_IMGEDITOR_PLUGIN_PATH);
+	fprintf(stderr, "   --list-plugin       show all registed plugins\n");
 	fprintf(stderr, "   --disable-plugin    disable all plugins\n");
 	fprintf(stderr, "-h --help              show this messages\n");
 	fprintf(stderr, "\n");
@@ -470,6 +472,8 @@ enum {
 	ACTION_UNPACK,
 	ACTION_PACK,
 
+	ACTION_PEEK,
+
 	ACTION_SEARCH = 's',
 
 	ACTION_LIST = 'l',
@@ -487,6 +491,7 @@ static struct option imgeditor_options[] = {
 	{ "list-plugin",	no_argument,		NULL,	ACTION_LIST_PLUGIN},
 	{ "unpack",		required_argument,	NULL,	ACTION_UNPACK	},
 	{ "pack",		required_argument,	NULL,	ACTION_PACK	},
+	{ "peek",		required_argument,	NULL,	ACTION_PEEK	},
 	{ "search",		no_argument,		NULL,	ACTION_SEARCH	},
 	{ "verbose",		no_argument,		NULL,	ARG_VERBOSE	},
 	{ "help",		no_argument,		NULL,	ACTION_HELP	},
@@ -537,6 +542,20 @@ static int arg_to_ul(const char *arg, const char *value, unsigned long *ul)
 	return 0;
 }
 
+static int editor_peek(struct imgeditor *editor, int fd, int64_t total_size,
+		       const char *out_file)
+{
+	int fd_out = fileopen(out_file, O_RDWR | O_TRUNC | O_CREAT, 0664);
+
+	if (fd_out < 0)
+		return fd_out;
+
+	dd64(fd, fd_out, 0, 0, total_size, NULL, NULL);
+	close(fd_out);
+
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	struct imgeditor *editor = NULL;
@@ -549,6 +568,7 @@ int main(int argc, char *argv[])
 	int main_argc = 0, sub_argc = argc;
 	int search_mode = 0, action = ACTION_LIST; /* default action */
 	int disable_plugin = 0;
+	int64_t peek_size = 0;
 	int fd = -1;
 	int ret = -1;
 
@@ -607,6 +627,7 @@ int main(int argc, char *argv[])
 		case ACTION_LIST:
 		case ACTION_PACK:
 		case ACTION_UNPACK:
+		case ACTION_PEEK:
 			origin_file = optarg;
 			action = c;
 			break;
@@ -686,6 +707,7 @@ int main(int argc, char *argv[])
 
 	case ACTION_LIST:
 	case ACTION_UNPACK:
+	case ACTION_PEEK:
 		fd = virtual_file_open(origin_file, O_RDONLY, 0, offset);
 		if (fd < 0)
 			return fd;
@@ -716,6 +738,27 @@ int main(int argc, char *argv[])
 			if (!matched) {
 				fprintf(stderr, "Error: can't detect the file type of %s\n",
 					origin_file);
+				goto done;
+			}
+		}
+
+		if (action == ACTION_PEEK) {
+			if (!out_file) {
+				fprintf(stderr, "Error: the output file is not selected\n");
+				goto done;
+			}
+
+			if (!editor->total_size) {
+				fprintf(stderr, "Error: can't detect total size with image type %s\n",
+					editor->name);
+				goto done;
+			}
+
+			lseek64(fd, filestart(fd), SEEK_SET);
+			peek_size = editor->total_size(editor->private_data, fd);
+			if (peek_size < 0) {
+				fprintf(stderr, "Error: get total size with the image type %s failed\n",
+					editor->name);
 				goto done;
 			}
 		}
@@ -824,6 +867,9 @@ int main(int argc, char *argv[])
 		if (editor->pack)
 			ret = editor->pack(editor->private_data, origin_file, fd,
 					   sub_argc, &argv[main_argc + 1]);
+		break;
+	case ACTION_PEEK:
+		ret = editor_peek(editor, fd, peek_size, out_file);
 		break;
 	}
 

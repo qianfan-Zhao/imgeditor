@@ -85,6 +85,7 @@ struct imgeditor {
 	/* p: point to private_data alloced by the core level. */
 	int			(*init)(void *p);
 	int			(*detect)(void *p, int force_type, int fd);
+	int64_t			(*total_size)(void *p, int fd);
 	int			(*list)(void *p, int fd, int argc, char **argv);
 	int			(*pack)(void *p, const char *dir, int fd_outimg, int argc, char **argv);
 	int			(*unpack)(void *p, int fd, const char *outdir, int argc, char **argv);
@@ -94,7 +95,7 @@ struct imgeditor {
 	struct imgmagic		search_magic;
 };
 
-#define IMGEDITOR_PLUGIN_STRUCT_VERSION	0x101
+#define IMGEDITOR_PLUGIN_STRUCT_VERSION	0x102
 
 void register_imgeditor(struct imgeditor *editor);
 
