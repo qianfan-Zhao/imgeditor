@@ -560,6 +560,7 @@ static char *string_lba_size(char *s, size_t bufsz, uint64_t lba)
 struct fdisk_option_value {
 	bool	l;
 	bool	x;
+	bool	n;
 };
 
 static const struct xopt_option fdisk_options[] = {
@@ -571,6 +572,10 @@ static const struct xopt_option fdisk_options[] = {
 		.name	= 'x',
 		.type	= XOPT_TYPE_BOOL,
 		.offset	= offsetof(struct fdisk_option_value, x),
+	}, {
+		.name	= 'n',
+		.type	= XOPT_TYPE_BOOL,
+		.offset	= offsetof(struct fdisk_option_value, n),
 	},
 	LIBXOPT_NULLOPTION,
 };
@@ -613,15 +618,20 @@ static int gpt_do_fdisk(struct gpt_editor_private_data *p, int argc, char **argv
 	printf("\n");
 
 	printf("Device             Start      End Sectors");
-	if (arg.x)
+	if (arg.x) {
 		printf(" Type-UUID                            UUID                                 Name   ");
-	else
+	} else {
 		printf("  Size");
+		if (arg.n)
+			printf("  Name");
+	}
 	printf("\n");
 
 	for (uint32_t i = 0; i < p->num_partition_entries; i++) {
 		struct gpt_entry *entry = &p->partitions[i];
 		uint64_t starting_lba, ending_lba, sz_lba;
+		uint8_t aligned_partname[sizeof(entry->partition_name)];
+		char name[128];
 
 		starting_lba = le64_to_cpu(entry->starting_lba);
 		ending_lba = le64_to_cpu(entry->ending_lba);
@@ -630,13 +640,20 @@ static int gpt_do_fdisk(struct gpt_editor_private_data *p, int argc, char **argv
 		if (starting_lba == 0 || ending_lba == 0)
 			break;
 
+		/* to avoid taking address of packed member of
+		 * ‘struct gpt_entry’ may result in an
+		 * unaligned pointer value
+		 */
+		memcpy(aligned_partname, entry->partition_name,
+			sizeof(entry->partition_name));
+		gpt_partition_name_to_char(
+			(const __le16 *)aligned_partname,
+			name, sizeof(name));
+
 		printf("/dev/mmcblk0p%-2d %8" PRIu64 " %8" PRIu64 " %7" PRIu64 " ",
 		       i + 1, starting_lba, ending_lba, sz_lba);
 
 		if (arg.x) {
-			uint8_t aligned_partname[sizeof(entry->partition_name)];
-			char name[128];
-
 			snprintf_uuid(guid, sizeof(guid), 0, "%02X",
 				      &entry->partition_type_guid);
 			printf("%s ", guid);
@@ -645,19 +662,13 @@ static int gpt_do_fdisk(struct gpt_editor_private_data *p, int argc, char **argv
 				      &entry->unique_partition_guid);
 			printf("%s ", guid);
 
-			/* to avoid taking address of packed member of
-			 * ‘struct gpt_entry’ may result in an
-			 * unaligned pointer value
-			 */
-			memcpy(aligned_partname, entry->partition_name,
-				sizeof(entry->partition_name));
-			gpt_partition_name_to_char(
-				(const __le16 *)aligned_partname,
-				name, sizeof(name));
 			printf("%s", name);
 		} else {
 			string_lba_size(sz, sizeof(sz), sz_lba);
 			printf("%s", sz);
+
+			if (arg.n)
+				printf("  %s", name);
 		}
 
 		printf("\n");
