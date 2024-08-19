@@ -121,6 +121,8 @@ static void fix_andr_hdr_structure(struct structure_item *items,
 
 struct abootimg_editor_private_data {
 	struct andr_img_hdr		head;
+
+	size_t				total_size;
 };
 
 static void abootimg_update_sha1sum(uint8_t *buf, size_t sz_buster, void *p)
@@ -198,7 +200,15 @@ static int abootimg_detect(void *private_data, int force_type, int fd)
 		return -1;
 	}
 
+	p->total_size = offset;
 	return 0;
+}
+
+static int64_t abootimg_total_size(void *private_data, int fd)
+{
+	struct abootimg_editor_private_data *p = private_data;
+
+	return p->total_size;
 }
 
 static int abootimg_list(void *private_data, int fd, int argc, char **argv)
@@ -250,7 +260,7 @@ static int abootimg_unpack_save_file(int fdimg, const char *outdir, const char *
 
 	if (sz != 0) {
 		snprintf(filename, sizeof(filename), "%s/%s", outdir, name);
-		fd_child = fileopen(filename, O_WRONLY | O_CREAT, 0664);
+		fd_child = fileopen(filename, O_WRONLY | O_TRUNC | O_CREAT, 0664);
 		if (fd_child < 0)
 			return fd_child;
 
@@ -530,6 +540,7 @@ static struct imgeditor abootimg_editor = {
 	.header_size		= sizeof(struct andr_img_hdr),
 	.private_data_size	= sizeof(struct abootimg_editor_private_data),
 	.detect			= abootimg_detect,
+	.total_size		= abootimg_total_size,
 	.list			= abootimg_list,
 	.unpack			= abootimg_unpack,
 	.pack			= abootimg_pack,

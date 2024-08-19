@@ -27,9 +27,12 @@ function bootimg_pack_unpack_test() {
     # show it
     assert_imgeditor_successful ${TEST_TMPDIR}/${version}.img || exit $?
 
+    # peek it
+    assert_imgeditor_successful --peek ${TEST_TMPDIR}/${version}.img ${TEST_TMPDIR}/1.img || exit $?
+
     # unpack it
     assert_imgeditor_successful \
-            --unpack ${TEST_TMPDIR}/${version}.img || exit $?
+            --unpack ${TEST_TMPDIR}/1.img || exit $?
 
     # compare
     for file in kernel.bin ramdisk.bin dtb.bin ; do
@@ -42,7 +45,7 @@ function bootimg_pack_unpack_test() {
         fi
 
         assert_fileeq ${BOOTIMG_GEN}/${file} \
-            ${TEST_TMPDIR}/${version}.img.dump/${file} \
+            ${TEST_TMPDIR}/1.img.dump/${file} \
             "${file} is differ" || exit $?
     done
 }
