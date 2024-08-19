@@ -436,6 +436,13 @@ static int fdt_detect(void *private_data, int force_type, int fd)
 	return fdt_unflatten(fdt);
 }
 
+static int64_t fdt_get_total_size(void *private_data, int fd)
+{
+	struct fdt_editor_private_data *fdt = private_data;
+
+	return fdt->totalsize;
+}
+
 static int fit_detect(void *private_data, int force_type, int fd)
 {
 	/* fit only support force_type mode */
@@ -630,6 +637,57 @@ static int fit_unpack(void *private_data, int fd, const char *outdir,
 	return 0;
 }
 
+static int64_t fit_get_total_size(void *private_data, int fd)
+{
+	struct fdt_editor_private_data *fit = private_data;
+	struct device_node *image, *images;
+	int64_t maxsz = fit->totalsize; /* total size of fdt part */
+
+	images = device_node_find_bypath(fit->root, "/images");
+	if (!images) {
+		fprintf(stderr, "Error: \"/images\" is not found\n");
+		return -1;
+	}
+
+	list_for_each_entry(image, &images->child, head, struct device_node) {
+		struct device_node *data_size_node, *data_pos_node;
+		uint32_t data_size, data_pos;
+		int64_t endp;
+
+		data_size_node = device_node_find_byname(image, "data-size");
+		if (!data_size_node) {
+			fprintf(stderr, "Error: %s/data-size is not found\n",
+				image->name);
+			return -1;
+		}
+
+		if (device_node_read_u32(data_size_node, &data_size) < 0) {
+			fprintf(stderr, "Error: %s/data-size is not u32\n",
+				image->name);
+			return -1;
+		}
+
+		data_pos_node = device_node_find_byname(image, "data-position");
+		if (!data_pos_node) {
+			fprintf(stderr, "Error: %s/data-position is not found\n",
+				image->name);
+			return -1;
+		}
+
+		if (device_node_read_u32(data_pos_node, &data_pos) < 0) {
+			fprintf(stderr, "Error: %s/data-position is not u32\n",
+				image->name);
+			return -1;
+		}
+
+		endp = data_pos + data_size;
+		if (endp > maxsz)
+			maxsz = endp;
+	}
+
+	return maxsz;
+}
+
 static struct imgeditor fdt_editor = {
 	.name			= "fdt",
 	.descriptor		= "device tree image editor",
@@ -637,6 +695,7 @@ static struct imgeditor fdt_editor = {
 	.header_size		= sizeof(struct fdt_header),
 	.private_data_size	= sizeof(struct fdt_editor_private_data),
 	.detect			= fdt_detect,
+	.total_size		= fdt_get_total_size,
 	.list			= fdt_list,
 	.exit			= fdt_exit,
 
@@ -656,6 +715,7 @@ static struct imgeditor fit_editor = {
 	.private_data_size	= sizeof(struct fdt_editor_private_data),
 	.detect			= fit_detect,
 	.list			= fdt_list,
+	.total_size		= fit_get_total_size,
 	.unpack			= fit_unpack,
 	.exit			= fdt_exit,
 };

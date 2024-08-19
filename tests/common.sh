@@ -182,7 +182,7 @@ function assert_fileeq() {
 function assert_imgeditor_successful() {
     log:info "imgeditor $@"
 
-    ${CMAKE_CURRENT_BINARY_DIR}/imgeditor "$@" \
+    ${CMAKE_CURRENT_BINARY_DIR}/imgeditor --disable-plugin "$@" \
             | tee ${TEST_TMPDIR}/imgeditor-stdio.txt
     assert_pipe_success "Running imgeditor failed"
 }

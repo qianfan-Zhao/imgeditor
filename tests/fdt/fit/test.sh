@@ -15,11 +15,14 @@ gen_random_file ${FIT_IMAGE_GEN}/ramdisk.bin    10000000 20000000
 # generate
 (
     cd ${FIT_IMAGE_GEN}
-    mkimage -E -p 0x1000 -B 0x200 -f image.its ${TEST_TMPDIR}/1.img || exit $?
+    mkimage -E -p 0x1000 -B 0x200 -f image.its ${TEST_TMPDIR}/fit.img || exit $?
 ) || exit $?
 
 # make sure imgeditor can detect it
-assert_imgeditor_successful --type fit ${TEST_TMPDIR}/1.img || exit $?
+assert_imgeditor_successful --type fit ${TEST_TMPDIR}/fit.img || exit $?
+
+# peek it
+assert_imgeditor_successful --type fit --peek ${TEST_TMPDIR}/fit.img ${TEST_TMPDIR}/1.img || exit $?
 
 # and then unpack it.
 assert_imgeditor_successful \
