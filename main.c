@@ -114,6 +114,7 @@ static int editor_prepare_private_data(struct imgeditor *editor)
 				editor->private_data_size, editor->name);
 			return -1;
 		}
+		memset(editor->private_data, 0, editor->private_data_size);
 	}
 
 	return 0;
