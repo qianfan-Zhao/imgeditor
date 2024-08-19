@@ -73,8 +73,6 @@ else()
         add_compile_options(-O2)
 endif()
 
-option(STATIC_LIBIMGEDITOR      "Use static library"                    OFF)
-
 option(ENABLE_ALL               "Enable all features"                   OFF)
 option(ENABLE_ANDROID           "Enable Android images"                 ON)
 option(ENABLE_DISK              "Enable disk paritition images"         ON)
@@ -166,12 +164,7 @@ set_target_properties(imgeditor_so PROPERTIES OUTPUT_NAME imgeditor)
 set_target_properties(imgeditor_static PROPERTIES OUTPUT_NAME imgeditor)
 
 add_executable(imgeditor_elf ${src})
-if (STATIC_LIBIMGEDITOR)
-        message(STATUS "use libimgeditor.a")
-        target_link_libraries(imgeditor_elf imgeditor_static)
-else()
-        target_link_libraries(imgeditor_elf imgeditor_so)
-endif()
+target_link_libraries(imgeditor_elf imgeditor_static)
 target_link_libraries(imgeditor_elf -ldl)
 target_link_libraries(imgeditor_elf -lrt) # for shm
 target_link_libraries(imgeditor_elf OpenSSL::Crypto OpenSSL::SSL)
@@ -191,11 +184,7 @@ set(IMGEDITOR_HEADERS
 
 add_executable(imgeditor_api_test ${src_api_test})
 target_link_libraries(imgeditor_api_test OpenSSL::Crypto OpenSSL::SSL)
-if (STATIC_LIBIMGEDITOR)
-        target_link_libraries(imgeditor_api_test imgeditor_static)
-else()
-        target_link_libraries(imgeditor_api_test imgeditor_so)
-endif()
+target_link_libraries(imgeditor_api_test imgeditor_static)
 target_link_libraries(imgeditor_api_test -lrt)
 
 # TEST_NAME: sometings like allwinner/sysconfig/test.sh
