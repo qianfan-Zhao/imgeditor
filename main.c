@@ -171,6 +171,7 @@ static struct imgeditor *get_imgeditor_byname(const char *name)
 struct img_location {
 	const char		*name;
 	int64_t			offset;
+	char			summary[1024];
 };
 
 static int img_location_compare(const void *p1, const void *p2)
@@ -205,6 +206,9 @@ static void print_img_location(struct img_location *img)
 			 disk_partition_type_name(part_type), part->name);
 		printf(" %-25s", part_info);
 	}
+
+	if (img->summary[0] != '\0')
+		printf(" %s", img->summary);
 
 	putchar('\n');
 }
@@ -283,6 +287,9 @@ static struct img_location *imgeditor_search_buf(int fd, off64_t file_offset,
 
 			detect = editor->detect(editor->private_data, 0, vfd);
 			if (detect == 0) {
+				struct img_location *img;
+				int r;
+
 				imgs = realloc(imgs,
 					       sizeof(*imgs) * (found + 1));
 
@@ -293,9 +300,22 @@ static struct img_location *imgeditor_search_buf(int fd, off64_t file_offset,
 					break;
 				}
 
-				imgs[found].name = editor->name;
-				imgs[found].offset = img_offset;
+				img = &imgs[found];
+				memset(img, 0, sizeof(*img));
+
+				img->name = editor->name;
+				img->offset = img_offset;
 				found++;
+
+				if (editor->summary) {
+					r = editor->summary(editor->private_data,
+							    vfd,
+							    img->summary,
+							    sizeof(img->summary));
+					if (r != 0)
+						memset(img->summary, 0,
+							sizeof(img->summary));
+				}
 
 				/* some driver such as sunxi_package will
 				 * alloc data when @detect,
