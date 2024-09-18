@@ -197,46 +197,26 @@ struct disk_partition {
 	uint64_t	end_addr;
 };
 
-enum disk_partition_type {
-	DISK_PARTITION_GPT,
-	DISK_PARTITION_MBR,
-	DISK_PARTITION_OTHERS,
-};
-
-static inline const char *disk_partition_type_name(enum disk_partition_type t)
-{
-	switch (t) {
-	case DISK_PARTITION_GPT:
-		return "GPT";
-	case DISK_PARTITION_MBR:
-		return "MBR";
-	default:
-		break;
-	}
-
-	return "???";
-}
-
 #define DISK_PARTITIONS_SCORE_WEAK	10
 #define DISK_PARTITIONS_SCORE_NORMAL	20
 #define DISK_PARTITIONS_SCORE_GOOD	80
 #define DISK_PARTITIONS_SCORE_PERFECT	100
 
 struct disk_partitions {
+	char				disk_type[64];
 	struct list_head		head;
-	enum disk_partition_type	type;
 	int				score;	/* the bigger the better */
 	size_t				n_parts;
 	struct disk_partition		parts[0];
 };
 
 struct disk_partitions *
-alloc_disk_partitions(enum disk_partition_type type, size_t n_parts);
+alloc_disk_partitions(const char *disk_type, size_t n_parts);
 void register_disk_partitions(struct disk_partitions *dp);
 void register_weak_disk_partitions(struct disk_partitions *dp);
 
 const struct disk_partition *
-find_registed_partition(uint64_t start_addr, enum disk_partition_type *ret_type);
+find_registed_partition(uint64_t start_addr, const char **disk_type);
 
 void free_registed_disk_partitions(void);
 

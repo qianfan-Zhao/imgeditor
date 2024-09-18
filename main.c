@@ -183,7 +183,7 @@ static int img_location_compare(const void *p1, const void *p2)
 
 static void print_img_location(struct img_location *img)
 {
-	enum disk_partition_type part_type;
+	const char *part_type = NULL;
 	const struct disk_partition *part;
 	char s_offset[128], s_sector[128];
 	int has_part = 0;
@@ -204,7 +204,7 @@ static void print_img_location(struct img_location *img)
 		char part_info[64];
 
 		snprintf(part_info, sizeof(part_info), "%s.%s",
-			 disk_partition_type_name(part_type), part->name);
+			 part_type, part->name);
 		printf(" %-25s", part_info);
 		has_part = 1;
 	}

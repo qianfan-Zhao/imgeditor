@@ -425,7 +425,7 @@ static void gpt_register_disk_partitions(struct gpt_editor_private_data *p)
 		++n_parts;
 	}
 
-	dp = alloc_disk_partitions(DISK_PARTITION_GPT, n_parts);
+	dp = alloc_disk_partitions("GPT", n_parts);
 	if (!dp)
 		return;
 

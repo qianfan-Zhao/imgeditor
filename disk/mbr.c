@@ -286,8 +286,7 @@ static int mbr_detect(void *private_data, int force_type, int fd)
 	if (ret < 0)
 		return ret;
 
-	disk_parts = alloc_disk_partitions(DISK_PARTITION_MBR,
-					   primary_count + p->logic_counts);
+	disk_parts = alloc_disk_partitions("MBR", primary_count + p->logic_counts);
 	if (disk_parts) {
 		size_t logic_index = 0, diskp_index = 0, sdax = 1;
 
