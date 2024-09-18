@@ -59,7 +59,6 @@ int imgeditor_core_setup_gd(void)
 		goto done;
 	}
 
-	list_init(&gd->partitions);
 	fd_gd = fd;
 
 done:

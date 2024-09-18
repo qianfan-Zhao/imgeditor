@@ -10,6 +10,17 @@
 void register_disk_partitions(struct disk_partitions *dp)
 {
 	struct global_data *gd = imgeditor_get_gd();
+	int part_cell = -1;
+
+	if (gd->active_partitions < GD_MAX_PARTITIONS) {
+		part_cell = gd->active_partitions;
+		gd->active_partitions++;
+	}
+
+	if (part_cell < 0) {
+		free(dp);
+		return;
+	}
 
 	if (dp->score == 0)
 		dp->score = DISK_PARTITIONS_SCORE_GOOD;
@@ -26,7 +37,7 @@ void register_disk_partitions(struct disk_partitions *dp)
 		}
 	}
 
-	list_add_tail(&dp->head, &gd->partitions);
+	gd->disk_parts_array[part_cell] = dp;
 }
 
 void register_weak_disk_partitions(struct disk_partitions *dp)
@@ -45,7 +56,6 @@ alloc_disk_partitions(const char *disk_type, size_t n_parts)
 	if (!dp)
 		return dp;
 
-	list_init(&dp->head);
 	snprintf(dp->disk_type, sizeof(dp->disk_type), "%s", disk_type);
 	dp->n_parts = n_parts;
 
@@ -55,13 +65,15 @@ alloc_disk_partitions(const char *disk_type, size_t n_parts)
 void free_registed_disk_partitions(void)
 {
 	struct global_data *gd = imgeditor_get_gd();
-	struct disk_partitions *dp, *next;
 
-	list_for_each_entry_safe(dp, next, &gd->partitions, head,
-				 struct disk_partitions) {
-		list_del(&dp->head);
-		free(dp);
+	for (size_t i = 0; i < gd->active_partitions; i++) {
+		struct disk_partitions *parts = gd->disk_parts_array[i];
+
+		gd->disk_parts_array[i] = NULL;
+		free(parts);
 	}
+
+	gd->active_partitions = 0;
 }
 
 const struct disk_partition *
@@ -71,9 +83,10 @@ const struct disk_partition *
 	struct global_data *gd = imgeditor_get_gd();
 	struct disk_partition *best_part = NULL;
 	int best_score = 0;
-	struct disk_partitions *dp;
 
-	list_for_each_entry(dp, &gd->partitions, head, struct disk_partitions) {
+	for (size_t i = 0; i < gd->active_partitions; i++) {
+		struct disk_partitions *dp = gd->disk_parts_array[i];
+
 		for (size_t i = 0; i < dp->n_parts; i++) {
 			struct disk_partition *part = &dp->parts[i];
 

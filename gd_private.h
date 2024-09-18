@@ -5,8 +5,8 @@
 #ifndef IMGEDITOR_GLOBAL_PRIVATE_H
 #define IMGEDITOR_GLOBAL_PRIVATE_H
 
+#include <stdint.h>
 #include <unistd.h>
-#include "list_head.h"
 
 #define MAX_VIRTUAL_FILE		32
 
@@ -17,11 +17,14 @@ struct virtual_file {
 	int				used;
 };
 
+struct disk_partitions;
+#define GD_MAX_PARTITIONS		8
+
 struct global_data {
 	int				verbose_level;
 
-	/* the list head for register_disk_partitions */
-	struct list_head		partitions;
+	size_t				active_partitions;
+	struct disk_partitions		*disk_parts_array[GD_MAX_PARTITIONS];
 
 	struct virtual_file		vfps[MAX_VIRTUAL_FILE];
 };
