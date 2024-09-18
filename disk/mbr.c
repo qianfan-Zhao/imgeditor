@@ -229,7 +229,9 @@ static int mbr_save_logic_cb(struct dos_partition *part, uint32_t extend_start,
 
 static int mbr_detect(void *private_data, int force_type, int fd)
 {
+	struct disk_partitions *disk_parts = NULL;
 	struct mbr_editor_private_data *p = private_data;
+	size_t primary_count = 0;
 	uint8_t buf[SECTOR_SIZE];
 	int ret;
 
@@ -260,18 +262,64 @@ static int mbr_detect(void *private_data, int force_type, int fd)
 		return -1;
 	}
 
+	ret = 0;
 	for (int i = 0; i < DOS_PRIMARY_PARTITIONS; i++) {
 		struct dos_partition *primary = &p->primary[i];
+
+		if (primary->sys_ind == 0)
+			continue;
 
 		/* only one extended partition */
 		if (is_extended(primary->sys_ind)) {
 			uint32_t extend_start = le32_to_cpu(primary->start);
 
-			return mbr_foreach_extended(force_type, fd,
+			ret = mbr_foreach_extended(force_type, fd,
 						    extend_start, 0,
 						    p,
 						    mbr_save_logic_cb);
+			break;
+		} else {
+			++primary_count;
 		}
+	}
+
+	if (ret < 0)
+		return ret;
+
+	disk_parts = alloc_disk_partitions(DISK_PARTITION_MBR,
+					   primary_count + p->logic_counts);
+	if (disk_parts) {
+		size_t logic_index = 0, diskp_index = 0, sdax = 1;
+
+		for (size_t i = 0; i < DOS_PRIMARY_PARTITIONS + p->logic_counts; i++) {
+			struct disk_partition *diskp = &disk_parts->parts[diskp_index];
+			struct dos_partition *primary;
+
+			if (i < DOS_PRIMARY_PARTITIONS)
+				primary = &p->primary[i];
+			else
+				primary = &p->logic[logic_index++];
+
+			snprintf(diskp->name, sizeof(diskp->name),
+				 "sda%zu", sdax++);
+
+			if (i < DOS_PRIMARY_PARTITIONS) {
+				if (primary->sys_ind == 0)
+					continue;
+				if (is_extended(primary->sys_ind))
+					continue;
+			}
+
+			diskp->start_addr = le32_to_cpu(primary->start);
+			diskp->end_addr = diskp->start_addr + le32_to_cpu(primary->size);
+			diskp->start_addr *= SECTOR_SIZE;
+			diskp->end_addr *= SECTOR_SIZE;
+			diskp->end_addr -= 1;
+
+			diskp_index++;
+		}
+
+		register_weak_disk_partitions(disk_parts);
 	}
 
 	return 0;

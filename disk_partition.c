@@ -11,7 +11,29 @@ void register_disk_partitions(struct disk_partitions *dp)
 {
 	struct global_data *gd = imgeditor_get_gd();
 
-	list_add_tail(&gd->partitions, &dp->head);
+	if (dp->score == 0)
+		dp->score = DISK_PARTITIONS_SCORE_GOOD;
+
+	if (get_verbose_level() > 1) {
+		printf("register disk: %d has %zu partitions, score = %d\n",
+			dp->type, dp->n_parts, dp->score);
+
+		for (size_t i = 0; i < dp->n_parts; i++) {
+			struct disk_partition *part = &dp->parts[i];
+
+			printf("    [%02zu]: %-8s %" PRIu64 ", %" PRIu64 "\n",
+				i, part->name, part->start_addr, part->end_addr);
+		}
+	}
+
+	list_add_tail(&dp->head, &gd->partitions);
+}
+
+void register_weak_disk_partitions(struct disk_partitions *dp)
+{
+	dp->score = DISK_PARTITIONS_SCORE_WEAK;
+
+	register_disk_partitions(dp);
 }
 
 struct disk_partitions *
@@ -47,6 +69,8 @@ const struct disk_partition *
 				enum disk_partition_type *ret_type)
 {
 	struct global_data *gd = imgeditor_get_gd();
+	struct disk_partition *best_part = NULL;
+	int best_score = 0;
 	struct disk_partitions *dp;
 
 	list_for_each_entry(dp, &gd->partitions, head, struct disk_partitions) {
@@ -58,10 +82,13 @@ const struct disk_partition *
 				if (ret_type)
 					*ret_type = dp->type;
 
-				return part;
+				if (dp->score > best_score) {
+					best_score = dp->score;
+					best_part = part;
+				}
 			}
 		}
 	}
 
-	return NULL;
+	return best_part;
 }

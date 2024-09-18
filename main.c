@@ -186,6 +186,7 @@ static void print_img_location(struct img_location *img)
 	enum disk_partition_type part_type;
 	const struct disk_partition *part;
 	char s_offset[128], s_sector[128];
+	int has_part = 0;
 
 	snprintf(s_offset, sizeof(s_offset),
 		 "0x%08" PRIx64 "(%" PRIu64 ")",
@@ -205,10 +206,14 @@ static void print_img_location(struct img_location *img)
 		snprintf(part_info, sizeof(part_info), "%s.%s",
 			 disk_partition_type_name(part_type), part->name);
 		printf(" %-25s", part_info);
+		has_part = 1;
 	}
 
-	if (img->summary[0] != '\0')
+	if (img->summary[0] != '\0') {
+		if (!has_part)
+			printf(" %-25s", " ");
 		printf(" %s", img->summary);
+	}
 
 	putchar('\n');
 }
@@ -218,6 +223,7 @@ static struct img_location *imgeditor_search_buf(int fd, off64_t file_offset,
 						 int *count)
 {
 	struct img_location *imgs = NULL;
+	int offset0_searched = 0;
 	int found = 0;
 	int ready;
 
@@ -234,6 +240,18 @@ static struct img_location *imgeditor_search_buf(int fd, off64_t file_offset,
 			const void *p_magic;
 			int detect;
 			int vfd;
+
+			/* MBR doesn't has any signature, but we want load it
+			 * to register disk partitions
+			 */
+			if (!offset0_searched && file_offset == 0) {
+				if (!strcmp(editor->name, "mbr")) {
+					offset0_searched++;
+
+					img_offset = 0;
+					goto detect_it;
+				}
+			}
 
 			if (sm->magic_sz == 0)
 				continue;
@@ -273,6 +291,7 @@ static struct img_location *imgeditor_search_buf(int fd, off64_t file_offset,
 			if (img_offset + (int)editor->header_size > filelength(fd))
 				continue;
 
+detect_it:
 			structure_force_endian(STRUCTURE_ENDIAN_FORCE_NONE);
 
 			memset(editor->private_data, 0,
