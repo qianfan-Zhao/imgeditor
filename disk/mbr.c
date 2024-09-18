@@ -177,12 +177,10 @@ static int mbr_foreach_extended(int force_type, int fd, uint32_t extend_start,
 	if (ret < 0)
 		return ret;
 
+	/* ending of partition tables */
 	if (buf[DOS_PART_MAGIC_OFFSET] != 0x55
-	    && buf[DOS_PART_MAGIC_OFFSET + 1] != 0xaa) {
-		fprintf_if_force_type("Error: mbr(%d) magic doesn't match\n",
-			start);
-		return -1;
-	}
+	    && buf[DOS_PART_MAGIC_OFFSET + 1] != 0xaa)
+		return 0;
 
 	memcpy(parts, &buf[DOS_PART_TBL_OFFSET], sizeof(parts));
 	for (int i = 0; i < DOS_PRIMARY_PARTITIONS; i++) {
