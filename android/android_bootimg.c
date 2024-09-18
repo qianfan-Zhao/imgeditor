@@ -9,6 +9,7 @@
 #include "imgeditor.h"
 #include "json_helper.h"
 #include "structure.h"
+#include "string_helper.h"
 
 typedef uint32_t u32;
 typedef uint64_t u64;
@@ -201,6 +202,17 @@ static int abootimg_detect(void *private_data, int force_type, int fd)
 	}
 
 	p->total_size = offset;
+	return 0;
+}
+
+static int abootimg_summary(void *private_data, int fd, char *buf, size_t bufsz)
+{
+	struct abootimg_editor_private_data *p = private_data;
+
+	snprintf_continue(&buf, &bufsz, "ID: ");
+	for (size_t i = 0; i < sizeof(p->head.id) / sizeof(p->head.id[0]); i++)
+		snprintf_continue(&buf, &bufsz, "%08x", p->head.id[i]);
+
 	return 0;
 }
 
@@ -540,6 +552,7 @@ static struct imgeditor abootimg_editor = {
 	.header_size		= sizeof(struct andr_img_hdr),
 	.private_data_size	= sizeof(struct abootimg_editor_private_data),
 	.detect			= abootimg_detect,
+	.summary		= abootimg_summary,
 	.total_size		= abootimg_total_size,
 	.list			= abootimg_list,
 	.unpack			= abootimg_unpack,

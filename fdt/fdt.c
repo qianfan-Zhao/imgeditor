@@ -506,6 +506,17 @@ static int fdt_show_memreserve(struct fdt_editor_private_data *fdt)
 	return 0;
 }
 
+static int fdt_summary(void *private_data, int fd, char *buf, size_t bufsz)
+{
+	struct fdt_editor_private_data *fdt = private_data;
+	uint32_t crc;
+
+	crc = crc32(0, fdt->dtb, fdt->totalsize);
+	snprintf(buf, bufsz, "CRC32: 0x%08x(%d)", crc, fdt->totalsize);
+
+	return 0;
+}
+
 static int fdt_list(void *private_data, int fd, int argc, char **argv)
 {
 	struct fdt_editor_private_data *fdt = private_data;
@@ -695,6 +706,7 @@ static struct imgeditor fdt_editor = {
 	.header_size		= sizeof(struct fdt_header),
 	.private_data_size	= sizeof(struct fdt_editor_private_data),
 	.detect			= fdt_detect,
+	.summary		= fdt_summary,
 	.total_size		= fdt_get_total_size,
 	.list			= fdt_list,
 	.exit			= fdt_exit,
