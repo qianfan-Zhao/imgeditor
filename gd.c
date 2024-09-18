@@ -3,6 +3,7 @@
  * qianfan Zhao <qianfanguijin@163.com>
  */
 #include <stdio.h>
+#include <string.h>
 #include <assert.h>
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -112,4 +113,28 @@ void imgeditor_free_gd(void)
 int get_verbose_level(void)
 {
 	return imgeditor_get_gd()->verbose_level;
+}
+
+void gd_export_imgeditor(struct imgeditor *imgeditor)
+{
+	struct global_data *gd = imgeditor_get_gd();
+
+	if (gd->export_imgeditor_counts < GD_MAX_IMGEDITOR) {
+		gd->export_imgeditors[gd->export_imgeditor_counts] = imgeditor;
+		gd->export_imgeditor_counts++;
+	}
+}
+
+struct imgeditor *gd_get_imgeditor(const char *name)
+{
+	struct global_data *gd = imgeditor_get_gd();
+
+	for (size_t i = 0; i < gd->export_imgeditor_counts; i++) {
+		struct imgeditor *imgeditor = gd->export_imgeditors[i];
+
+		if (!strcmp(imgeditor->name, name))
+			return imgeditor;
+	}
+
+	return NULL;
 }

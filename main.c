@@ -168,6 +168,16 @@ static struct imgeditor *get_imgeditor_byname(const char *name)
 	return NULL;
 }
 
+static void imgeditor_export_registed(void)
+{
+	struct imgeditor *editor;
+
+	list_for_each_entry(editor, &registed_imgeditor_lists, head,
+			    struct imgeditor) {
+		gd_export_imgeditor(editor);
+	}
+}
+
 struct img_location {
 	const char		*name;
 	int64_t			offset;
@@ -712,6 +722,8 @@ int main(int argc, char *argv[])
 		ret = imgeditor_search(out_file, offset);
 		goto done;
 	}
+
+	imgeditor_export_registed();
 
 	/*
 	 * `imgeditor --type gpt -- xxx` run in main mode

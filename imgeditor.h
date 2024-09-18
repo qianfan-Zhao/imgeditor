@@ -220,4 +220,6 @@ find_registed_partition(uint64_t start_addr, const char **disk_type);
 
 void free_registed_disk_partitions(void);
 
+int imgeditor_editor_main(const char *name, const char *args);
+
 #endif
