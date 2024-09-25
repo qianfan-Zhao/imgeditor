@@ -21,6 +21,8 @@
 #include "minilzo.h"
 #include "gd_private.h"
 
+static struct imgeditor *get_imgeditor_by_private_data(void *p);
+
 static LIST_HEAD(registed_plugins);
 
 static int imgeditor_filter_plugin(const char *name)
@@ -106,9 +108,18 @@ static LIST_HEAD(registed_imgeditor_lists);
 
 static int editor_prepare_private_data(struct imgeditor *editor)
 {
-	if (!editor->private_data && editor->private_data_size > 0) {
+	if (!editor->private_data) {
+		/* used as an ID,
+		 * to search the imgeditor by this private data in
+		 * @get_imgeditor_by_private_data.
+		 */
+		size_t pdata_size = 4;
+
+		if (editor->private_data_size)
+			pdata_size = editor->private_data_size;
+
 		/* alloc private data first */
-		editor->private_data = malloc(editor->private_data_size);
+		editor->private_data = malloc(pdata_size);
 		if (!editor->private_data) {
 			fprintf(stderr, "Error: alloc %zu bytes private data for %s failed\n",
 				editor->private_data_size, editor->name);
@@ -133,11 +144,92 @@ static int editor_init(struct imgeditor *editor)
 	return ret;
 }
 
+static int empty_rw_file(char *name, size_t namesz)
+{
+	snprintf(name, namesz, "/tmp/imagewtyXXXXXX");
+
+	return mkstemp(name);
+}
+
+static int imgeditor_unpack2fd_helper(struct imgeditor *editor, int fd,
+				      int fd_out, int argc, char **argv)
+{
+	char tmpfile[128];
+	int ret, fd_tmp;
+
+	fd_tmp = empty_rw_file(tmpfile, sizeof(tmpfile));
+	if (fd_tmp < 0) {
+		fprintf(stderr, "Error: create tmp file failed\n");
+		return fd_tmp;
+	}
+
+	/* unpack and copy to the new file */
+	ret = editor->unpack(editor->private_data, fd, tmpfile, argc, argv);
+	if (ret == 0)
+		dd64(fd_tmp, fd_out, 0, 0, filelength(fd_tmp), NULL, NULL);
+
+	close(fd_tmp);
+	unlink(tmpfile);
+	return ret;
+}
+
+static int imgeditor_unpack_helper(struct imgeditor *editor, int fd,
+				   const char *fileout, int argc, char **argv)
+{
+	int fd_out = fileopen(fileout, O_RDWR | O_CREAT | O_TRUNC, 0664);
+	int ret;
+
+	if (fd_out < 0)
+		return fd_out;
+
+	ret = editor->unpack2fd(editor->private_data, fd, fd_out, argc, argv);
+	close(fd_out);
+
+	return ret;
+}
+
+static int imgeditor_default_unpack2fd(void *private_data, int fd, int fd_out,
+				       int argc, char **argv)
+{
+	struct imgeditor *editor = get_imgeditor_by_private_data(private_data);
+
+	if (!editor) {
+		fprintf(stderr, "Error: %s can't find matched editor\n",
+			__func__);
+		abort();
+	}
+
+	return imgeditor_unpack2fd_helper(editor, fd, fd_out, argc, argv);
+}
+
+static int imgeditor_default_unpack(void *private_data, int fd,
+				    const char *outfile, int argc, char **argv)
+{
+	struct imgeditor *editor = get_imgeditor_by_private_data(private_data);
+
+	if (!editor) {
+		fprintf(stderr, "Error: %s can't find matched editor\n",
+			__func__);
+		abort();
+	}
+
+	return imgeditor_unpack_helper(editor, fd, outfile, argc, argv);
+}
+
 void register_imgeditor(struct imgeditor *editor)
 {
 	list_init(&editor->head);
 
 	if (!editor_prepare_private_data(editor)) {
+		int has_unpack = !!editor->unpack, has_unpack2fd = !!editor->unpack2fd;
+
+		if (!(editor->flags & IMGEDITOR_FLAG_CONTAIN_MULTI_BIN)) {
+			if (!editor->unpack2fd && has_unpack)
+				editor->unpack2fd = imgeditor_default_unpack2fd;
+			if (!editor->unpack && has_unpack2fd)
+				editor->unpack = imgeditor_default_unpack;
+		}
+
 		if (!editor_init(editor))
 			list_add_tail(&editor->head, &registed_imgeditor_lists);
 		else
@@ -162,6 +254,19 @@ static struct imgeditor *get_imgeditor_byname(const char *name)
 	list_for_each_entry(editor, &registed_imgeditor_lists, head,
 			    struct imgeditor) {
 		if (!strcmp(editor->name, name))
+			return editor;
+	}
+
+	return NULL;
+}
+
+static struct imgeditor *get_imgeditor_by_private_data(void *p)
+{
+	struct imgeditor *editor;
+
+	list_for_each_entry(editor, &registed_imgeditor_lists, head,
+			    struct imgeditor) {
+		if (editor->private_data && editor->private_data == p)
 			return editor;
 	}
 

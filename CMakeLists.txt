@@ -92,7 +92,10 @@ if (ENABLE_ANDROID OR ENABLE_ALL)
 
         list(APPEND tests
                 android/bootimg/test.sh
+                android/sparse/test.sh
         )
+
+        require_program(img2simg)
 endif()
 
 if (ENABLE_DISK OR ENABLE_ALL)

@@ -90,13 +90,14 @@ struct imgeditor {
 	int			(*list)(void *p, int fd, int argc, char **argv);
 	int			(*pack)(void *p, const char *dir, int fd_outimg, int argc, char **argv);
 	int			(*unpack)(void *p, int fd, const char *outdir, int argc, char **argv);
+	int			(*unpack2fd)(void *p, int fd, int fd_out, int argc, char **argv);
 	int			(*main)(void *p, int argc, char **argv);
 	void			(*exit)(void *p);
 
 	struct imgmagic		search_magic;
 };
 
-#define IMGEDITOR_PLUGIN_STRUCT_VERSION	0x103
+#define IMGEDITOR_PLUGIN_STRUCT_VERSION	0x104
 
 void register_imgeditor(struct imgeditor *editor);
 

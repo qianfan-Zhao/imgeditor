@@ -165,16 +165,12 @@ static void chunk_buffer_fill(uint8_t *buffer, size_t sz_buster, void *p)
 
 }
 
-static int sparse_unpack(void *private_data, int fd, const char *fileout, int argc, char **argv)
+static int sparse_unpack2fd(void *private_data, int fd, int fdout, int argc, char **argv)
 {
-	int fdout = fileopen(fileout, O_RDWR | O_CREAT, 0664);
 	struct sparse_editor_private_data *p = private_data;
 	struct sparse_header *header = &p->head;
 	size_t offset_in = 0, offset_out = 0;
 	uint32_t fill;
-
-	if (fdout < 0)
-		return fdout;
 
 	offset_in = header->file_hdr_sz;
 	for (size_t i = 0; i < header->total_chunks; i++) {
@@ -241,13 +237,13 @@ static int sparse_unpack(void *private_data, int fd, const char *fileout, int ar
 }
 
 static struct imgeditor sparse_editor = {
-	.name			= "simg",
+	.name			= "asparse",
 	.descriptor		= "android sparse image editor",
 	.flags			= IMGEDITOR_FLAG_SINGLE_BIN,
 	.header_size		= sizeof(struct sparse_header),
 	.private_data_size	= sizeof(struct sparse_editor_private_data),
 	.detect			= sparse_detect,
 	.list			= sparse_list,
-	.unpack			= sparse_unpack,
+	.unpack2fd		= sparse_unpack2fd,
 };
 REGISTER_IMGEDITOR(sparse_editor);

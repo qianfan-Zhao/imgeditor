@@ -26,7 +26,7 @@ jobs:
       # mtd-utils: mkfs.ubifs ubinize
       run: |
         sudo apt update
-        sudo apt install mtd-utils u-boot-tools dos2unix
+        sudo apt install mtd-utils u-boot-tools dos2unix img2simg
 
     - name: gcc version
       run: |
