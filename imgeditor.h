@@ -221,6 +221,11 @@ find_registed_partition(uint64_t start_addr, const char **disk_type);
 
 void free_registed_disk_partitions(void);
 
+int imgeditor_editor_detect(const char *name, int fd);
 int imgeditor_editor_main(const char *name, const char *args);
+int imgeditor_editor_unpack(const char *name, int fd, const char *out,
+			    const char *args);
+int imgeditor_editor_unpack2fd(const char *name, int fd, int fd_out,
+			       const char *args);
 
 #endif
