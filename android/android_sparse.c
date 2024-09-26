@@ -170,7 +170,18 @@ static int sparse_unpack2fd(void *private_data, int fd, int fdout, int argc, cha
 	struct sparse_editor_private_data *p = private_data;
 	struct sparse_header *header = &p->head;
 	size_t offset_in = 0, offset_out = 0;
+	int fast = 0;
 	uint32_t fill;
+
+	/* options:
+	 * --fast: skip all CHUNK_TYPE_DONT_CARE parts
+	 */
+	for (int i = 0; i < argc; i++) {
+		const char *s = argv[i];
+
+		if (!strcmp(s, "--fast"))
+			++fast;
+	}
 
 	offset_in = header->file_hdr_sz;
 	for (size_t i = 0; i < header->total_chunks; i++) {
@@ -203,7 +214,8 @@ static int sparse_unpack2fd(void *private_data, int fd, int fdout, int argc, cha
 		case CHUNK_TYPE_DONT_CARE:
 			/* chunk #3883: ---     32701 blocks, size = 0x0000000c */
 			total_data_size = chunk.chunk_sz * header->blk_sz;
-			dd(-1, fdout, 0, offset_out, total_data_size, NULL, NULL);
+			if (fast == 0)
+				dd(-1, fdout, 0, offset_out, total_data_size, NULL, NULL);
 			offset_out += total_data_size;
 			break;
 		case CHUNK_TYPE_FILL:
