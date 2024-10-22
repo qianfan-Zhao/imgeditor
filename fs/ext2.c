@@ -1,6 +1,9 @@
 /*
  * ext2 file system imaga editor (experience)
+ *
  * reference: https://ext4.wiki.kernel.org/index.php/Ext4_Disk_Layout
+ *            https://docs.kernel.org/filesystems/ext4/globals.html
+ *            https://blogs.oracle.com/linux/post/ondisk-journal-data-structures-jbd2
  *
  * qianfan Zhao
  */
@@ -14,7 +17,12 @@
 #include <errno.h>
 #include "imgeditor.h"
 #include "ext_common.h"
+#include "ext4_journal.h"
 #include "structure.h"
+
+struct ext2_editor_private_data;
+static void *alloc_inode_file(struct ext2_editor_private_data *p, uint32_t ino,
+			      uint64_t *ret_filesize);
 
 static void structure_item_print_ext2_unix_epoch(const char *print_name_fmt, const char *name,
 						 const void *addr, size_t sz)
@@ -281,6 +289,122 @@ static const struct structure_item ext2_inode_structure_part3[] = {
 	STRUCTURE_ITEM_END(),
 };
 
+static void structure_ext4_jsb_print_blocktype(const char *print_name_fmt,
+						const char *name,
+						const void *p, size_t sz)
+{
+	const __be32 *p_be32 = p;
+	uint32_t blocktype = be32_to_cpu(*p_be32);
+
+	structure_print_name(print_name_fmt, name);
+	printf("0x%08x (", blocktype);
+
+	switch (blocktype) {
+	case EXT3_JOURNAL_DESCRIPTOR_BLOCK:
+		printf("Descriptor");
+		break;
+	case EXT3_JOURNAL_COMMIT_BLOCK:
+		printf("Commit");
+		break;
+	case EXT3_JOURNAL_SUPERBLOCK_V1:
+	case EXT3_JOURNAL_SUPERBLOCK_V2:
+		printf("Superblock, v%d",
+			blocktype - EXT3_JOURNAL_SUPERBLOCK_V1 + 1);
+		break;
+	case EXT3_JOURNAL_REVOKE_BLOCK:
+		printf("Revocation");
+		break;
+	default:
+		printf("???");
+		break;
+	}
+
+	printf(")\n");
+}
+
+static const struct structure_item ext4_journal_header_structure[] = {
+	STRUCTURE_ITEM(struct journal_header_t, h_magic,		structure_item_print_be_xunsigned),
+	STRUCTURE_ITEM(struct journal_header_t, h_blocktype,		structure_ext4_jsb_print_blocktype),
+	STRUCTURE_ITEM(struct journal_header_t, h_sequence,		structure_item_print_be_unsigned),
+	STRUCTURE_ITEM_END(),
+};
+
+struct bit_descriptor {
+	int		value;
+	const char	*descriptor;
+};
+
+static void print_bit_descriptors(uint32_t flags, const struct bit_descriptor *d)
+{
+	for (; d->descriptor; d++) {
+		if (flags & d->value)
+			printf(" %s", d->descriptor);
+	}
+}
+
+static void ext4_jsb_print_features(const char *print_name_fmt, const char *name,
+				    const void *p_features,
+				    const struct bit_descriptor *d)
+{
+	const __be32 *p_be32 = p_features;
+	uint32_t features = be32_to_cpu(*p_be32);
+
+	structure_print_name(print_name_fmt, name);
+	printf("0x%08x (", features);
+
+	print_bit_descriptors(features, d);
+	printf(" )\n");
+}
+
+#define JBD2_FEATURE_BIT_DESCRIPTOR(name) { name, #name }
+
+static void structure_ext4_jsb_compat_feature(const char *print_name_fmt,
+					      const char *name,
+					      const void *p, size_t sz)
+{
+	static const struct bit_descriptor compat_features[] = {
+		JBD2_FEATURE_BIT_DESCRIPTOR(JBD2_FEATURE_COMPAT_CHECKSUM),
+		{ 0, NULL },
+	};
+
+	ext4_jsb_print_features(print_name_fmt, name, p, compat_features);
+}
+
+static void structure_ext4_jsb_incompat_features(const char *print_name_fmt,
+						 const char *name,
+						 const void *p, size_t sz)
+{
+	static const struct bit_descriptor incompat_features[] = {
+		JBD2_FEATURE_BIT_DESCRIPTOR(JBD2_FEATURE_INCOMPAT_REVOKE),
+		JBD2_FEATURE_BIT_DESCRIPTOR(JBD2_FEATURE_INCOMPAT_64BIT),
+		JBD2_FEATURE_BIT_DESCRIPTOR(JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT),
+		JBD2_FEATURE_BIT_DESCRIPTOR(JBD2_FEATURE_INCOMPAT_CSUM_V2),
+		JBD2_FEATURE_BIT_DESCRIPTOR(JBD2_FEATURE_INCOMPAT_CSUM_V3),
+		JBD2_FEATURE_BIT_DESCRIPTOR(JBD2_FEATURE_INCOMPAT_FAST_COMMIT),
+		{ 0, NULL },
+	};
+
+	ext4_jsb_print_features(print_name_fmt, name, p, incompat_features);
+}
+
+static const struct structure_item ext4_journal_sblock_structure[] = {
+	STRUCTURE_ITEM(struct journal_superblock_t, s_blocksize,		structure_item_print_be_unsigned),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_maxlen,			structure_item_print_be_unsigned),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_first,			structure_item_print_be_xunsigned),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_sequence,			structure_item_print_be_unsigned),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_start,			structure_item_print_be_xunsigned),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_errno,			structure_item_print_be_xunsigned),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_feature_compat,		structure_ext4_jsb_compat_feature),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_feature_incompat,		structure_ext4_jsb_incompat_features),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_feature_ro_compat,	structure_item_print_be_xunsigned),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_uuid,			structure_item_print_x8_array),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_nr_users,			structure_item_print_be_xunsigned),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_dynsuper,			structure_item_print_be_xunsigned),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_max_transaction,		structure_item_print_be_xunsigned),
+	STRUCTURE_ITEM(struct journal_superblock_t, s_max_trans_data,		structure_item_print_be_xunsigned),
+	STRUCTURE_ITEM_END(),
+};
+
 static void structure_print_ext4_extent(const char *print_name_fmt, struct ext4_extent_header *eh)
 {
 	void *p = eh;
@@ -392,8 +516,9 @@ static int ext2_inode_block_number(struct ext2_editor_private_data *p, int ino,
 	return 0;
 }
 
-static int ext2_read_inode(struct ext2_editor_private_data *p, int ino,
-			   struct ext2_inode *inode)
+static int _ext2_read_inode(struct ext2_editor_private_data *p, int ino,
+			    struct ext2_inode *inode,
+			    uint32_t *ret_blkno, uint32_t *ret_blk_offset)
 {
 	uint32_t blkno, blk_offset;
 	int ret;
@@ -410,7 +535,18 @@ static int ext2_read_inode(struct ext2_editor_private_data *p, int ino,
 		return -1;
 	}
 
+	if (ret_blkno)
+		*ret_blkno = blkno;
+	if (ret_blk_offset)
+		*ret_blk_offset = blk_offset;
+
 	return 0;
+}
+
+static int ext2_read_inode(struct ext2_editor_private_data *p, int ino,
+			   struct ext2_inode *inode)
+{
+	return _ext2_read_inode(p, ino, inode, NULL, NULL);
 }
 
 static int ext2_read_blocks(struct ext2_editor_private_data *p,
@@ -1093,6 +1229,7 @@ static int ext2_do_sblock(void *private_data, int fd, int argc, char **argv)
 static int ext2_do_inode(void *private_data, int fd, int argc, char **argv)
 {
 	struct ext2_editor_private_data *p = private_data;
+	uint32_t blkno, blk_offset;
 	struct ext2_inode inode;
 	int ino = -1;
 	int ret;
@@ -1105,10 +1242,12 @@ static int ext2_do_inode(void *private_data, int fd, int argc, char **argv)
 		return -1;
 	}
 
-	ret = ext2_read_inode(p, ino, &inode);
+	ret = _ext2_read_inode(p, ino, &inode, &blkno, &blk_offset);
 	if (ret < 0)
 		return ret;
 
+	printf("inode #%d location on blk #%d + 0x%04x\n",
+		ino, blkno, blk_offset);
 	structure_print_ext2_inode("%-30s: ", &inode);
 	return 0;
 }
@@ -1251,6 +1390,221 @@ static int ext2_do_list(void *private_data, int fd, int argc, char **argv)
 	return print_dirent(p, EXT2_ROOT_INO, 0, depth);
 }
 
+static size_t journal_descriptor_blocktag_size(uint32_t incompat_features)
+{
+	size_t sz;
+
+	/* the size is 16 (without UUID) or 32 bytes when CSUM_V3 */
+	if (incompat_features & JBD2_FEATURE_INCOMPAT_CSUM_V3)
+		return sizeof(struct journal_block_tag3_s);
+
+	/* IF CSUM_V3 is not set, teh size is 8, 12, 24, or 28 bytes */
+	sz = sizeof(struct journal_block_tag_s);
+
+	if (!(incompat_features & JBD2_FEATURE_INCOMPAT_64BIT))
+		sz -= sizeof(__be32); /* t_blocknr_high */
+
+	return sz;
+}
+
+static int ext2_journal_list_descriptor(struct journal_superblock_t *sb,
+					uint32_t journal_blkno,
+					uint32_t *ret_data_blks,
+					void *blockbuf, size_t blocksize)
+{
+	uint32_t incompat_features = be32_to_cpu(sb->s_feature_incompat);
+	size_t tagsize = journal_descriptor_blocktag_size(incompat_features);
+	void *p = blockbuf + sizeof(struct journal_header_t);
+	uint32_t data_blks = 0;
+	size_t tailsize = 0;
+
+	if (incompat_features & JBD2_FEATURE_INCOMPAT_CSUM_V2_3)
+		tailsize = sizeof(struct jbd2_journal_block_tail);
+
+	while ((size_t)(p - blockbuf) <= blocksize - tagsize - tailsize) {
+		struct journal_block_tag3_s *tag3 = p;
+		struct journal_block_tag_s *tag = p;
+		uint64_t blocknr = 0;
+		uint32_t flags;
+
+		++data_blks;
+
+		if (incompat_features & JBD2_FEATURE_INCOMPAT_CSUM_V3) {
+			blocknr = be32_to_cpu(tag3->t_blocknr_high);
+			blocknr <<= 32;
+			blocknr |= be32_to_cpu(tag3->t_blocknr);
+			flags = be32_to_cpu(tag3->t_flags);
+		} else {
+			if (incompat_features & JBD2_FEATURE_INCOMPAT_64BIT)
+				blocknr = be32_to_cpu(tag->t_blocknr_high);
+			blocknr <<= 32;
+			blocknr |= be32_to_cpu(tag->t_blocknr);
+			flags = be16_to_cpu(tag->t_flags);
+		}
+
+		printf("\n%27sFS blocknr %-8" PRIu64
+		       "logged at journal block %-5d with flags 0x%x",
+			"", blocknr, journal_blkno + data_blks, flags);
+
+		if (flags & EXT3_JOURNAL_FLAG_LAST_TAG)
+			break;
+
+		p += tagsize;
+		if (!(flags & EXT3_JOURNAL_FLAG_SAME_UUID))
+			p += 16;
+	}
+
+	*ret_data_blks = data_blks;
+	return 0;
+}
+
+static int ext2_do_journal_list(void *journal_buf, size_t journal_size)
+{
+	struct journal_superblock_t *sb = journal_buf + sizeof(struct journal_header_t);
+	struct journal_revoke_header_t *revoke;
+	struct commit_header *commit;
+	void *p = journal_buf;
+	uint32_t journal_blkno = 0;
+
+	while (p - journal_buf < (int)journal_size) {
+		struct journal_header_t *h = p;
+		uint32_t blocktype = be32_to_cpu(h->h_blocktype);
+		uint32_t skip_size = be32_to_cpu(sb->s_blocksize);
+
+		if (be32_to_cpu(h->h_magic) != EXT3_JOURNAL_MAGIC_NUMBER)
+			goto next;
+
+		switch (blocktype) {
+		case EXT3_JOURNAL_DESCRIPTOR_BLOCK:
+		case EXT3_JOURNAL_COMMIT_BLOCK:
+		case EXT3_JOURNAL_SUPERBLOCK_V1:
+		case EXT3_JOURNAL_SUPERBLOCK_V2:
+		case EXT3_JOURNAL_REVOKE_BLOCK:
+			printf("Journal %4d on blk #%-5d ",
+				be32_to_cpu(h->h_sequence), journal_blkno);
+			break;
+		default:
+			goto next;
+		}
+
+		switch (blocktype) {
+		case EXT3_JOURNAL_SUPERBLOCK_V1:
+		case EXT3_JOURNAL_SUPERBLOCK_V2:
+			printf("%-13s sequence=%d", "Superblock",
+				be32_to_cpu(sb->s_sequence));
+			break;
+		case EXT3_JOURNAL_DESCRIPTOR_BLOCK:
+			printf("%-13s ", "Descriptor");
+			{
+				uint32_t n_data_blk = 0;
+
+				/* In general, the dta blocks being written to
+				 * disk through the journal are written
+				 * verbatim into the journal file after the
+				 * descriptor block.
+				 */
+				ext2_journal_list_descriptor(sb, journal_blkno,
+					&n_data_blk,
+					p, be32_to_cpu(sb->s_blocksize));
+
+				journal_blkno += n_data_blk;
+				skip_size +=
+					(n_data_blk * be32_to_cpu(sb->s_blocksize));
+			}
+			break;
+		case EXT3_JOURNAL_COMMIT_BLOCK:
+			commit = p + sizeof(*h);
+			printf("%-13s", "Commit");
+
+			{
+				char buf[64];
+				struct tm tm = { 0 };
+				time_t t = be64_to_cpu(commit->h_commit_sec);
+
+				localtime_r(&t, &tm);
+				strftime(buf, sizeof(buf), "%FT%T", &tm);
+				printf(" %s.%03d",
+					buf,
+					be32_to_cpu(commit->h_commit_nsec) / 1000000);
+			}
+			break;
+		case EXT3_JOURNAL_REVOKE_BLOCK:
+			revoke = p + sizeof(*h);
+			printf("%-13s", "Revocation");
+			printf(" count=%d", be32_to_cpu(revoke->r_count) / 4);
+			for (unsigned int i = 0;
+			    i < be32_to_cpu(revoke->r_count); i += 4) {
+				__be32 *p_revoke_blk = (void *)(revoke + 1) + i;
+
+				printf(" %d", be32_to_cpu(*p_revoke_blk));
+			}
+			break;
+		}
+
+		printf("\n");
+	next:
+		p += skip_size;
+		journal_blkno++;
+	}
+
+	return 0;
+}
+
+static int ext2_do_journal_superblock(void *journal_buf, size_t journal_size)
+{
+	structure_print("%-30s", journal_buf, ext4_journal_header_structure);
+
+	structure_print("%-30s",
+			journal_buf + sizeof(struct journal_header_t),
+			ext4_journal_sblock_structure);
+	return 0;
+}
+
+static int ext2_do_journal_block(int argc, char **argv,
+				 void *journal_buf, size_t journal_size)
+{
+	struct journal_superblock_t *sb = journal_buf + sizeof(struct journal_header_t);
+	uint32_t blksize = be32_to_cpu(sb->s_blocksize);
+	uint32_t blkno;
+
+	if (argc != 2) {
+		fprintf(stderr, "Usage: journal block #blkno\n");
+		return -1;
+	}
+
+	blkno = (uint32_t)strtol(argv[1], NULL, 10);
+	if (blkno * blksize >= journal_size) {
+		fprintf(stderr, "Error: journal blk #%d overrange\n", blkno);
+		return -1;
+	}
+
+	hexdump(journal_buf + blkno * blksize, blksize, 0);
+	return 0;
+}
+
+static int ext2_do_journal(void *private_data, int fd, int argc, char **argv)
+{
+	struct ext2_editor_private_data *p = private_data;
+	uint64_t journal_size;
+	void *journal_buf;
+	int ret = -1;
+
+	journal_buf = alloc_inode_file(p, le32_to_cpu(p->sblock.journal_inode),
+				       &journal_size);
+	if (!journal_buf)
+		return -1;
+
+	if (argc <= 1)
+		ret = ext2_do_journal_list(journal_buf, journal_size);
+	else if (!strcmp(argv[1], "sblock"))
+		ret = ext2_do_journal_superblock(journal_buf, journal_size);
+	else if (!strcmp(argv[1], "block"))
+		ret = ext2_do_journal_block(argc - 1, argv + 1, journal_buf, journal_size);
+
+	free(journal_buf);
+	return ret;
+}
+
 static int ext2_main(void *private_data, int fd, int argc, char **argv)
 {
 	if (argc >= 1) {
@@ -1266,6 +1620,8 @@ static int ext2_main(void *private_data, int fd, int argc, char **argv)
 			return ext2_do_dirent(private_data, fd, argc, argv);
 		else if (!strcmp(argv[0], "extent"))
 			return ext2_do_extent(private_data, fd, argc, argv);
+		else if (!strcmp(argv[0], "journal"))
+			return ext2_do_journal(private_data, fd, argc, argv);
 	}
 
 	return ext2_do_list(private_data, fd, argc, argv);
@@ -1420,6 +1776,114 @@ done:
 	chmod(filename, mode);
 
 	return ret;
+}
+
+static int load_file_from_dir_blocks(struct ext2_editor_private_data *p,
+				       struct ext2_inode *inode, uint32_t ino,
+				       void *buf, uint64_t bufsz)
+{
+	struct ext2_inode_blocks b = { .blocks = NULL };
+	size_t copied = 0;
+	int ret;
+
+	ret = ext2_inode_blocks_read(p, &b, inode, ino);
+	if (ret < 0)
+		return ret;
+
+	if (bufsz > b.total * p->block_size) {
+		fprintf(stderr, "Error: load inode #%d failed(bufsize %ld and "
+			"dir_blocks size %zu doesn't match)\n",
+			ino, (long)bufsz, b.total);
+		ret = -1;
+		goto done;
+	}
+
+	for (size_t i = 0; i < b.total && bufsz > 0; i++) {
+		uint32_t chunk_sz = bufsz;
+
+		if (chunk_sz > p->block_size)
+			chunk_sz = p->block_size;
+
+		lseek64(p->fd, b.blocks[i] * p->block_size, SEEK_SET);
+		read(p->fd, buf + copied, chunk_sz);
+
+		copied += chunk_sz;
+		bufsz -= chunk_sz;
+	}
+
+done:
+	free(b.blocks);
+	return ret;
+}
+
+static void *alloc_inode_file(struct ext2_editor_private_data *p, uint32_t ino,
+			      uint64_t *ret_filesize)
+{
+	struct ext2_inode inode;
+	struct extent_iterator it;
+	void *buf = NULL;
+	uint64_t filesz;
+	int ret;
+
+	ret = ext2_read_inode(p, ino, &inode);
+	if (ret < 0)
+		return buf;
+
+	if ((le16_to_cpu(inode.mode) & INODE_MODE_S_IFLINK) == 0) {
+		fprintf(stderr, "Error: alloc inode file #%d failed"
+				"(not a file)\n", ino);
+		return buf;
+	}
+
+	filesz = le32_to_cpu(inode.size_high);
+	filesz = filesz << 32;
+	filesz |= le32_to_cpu(inode.size);
+	*ret_filesize = filesz;
+
+	buf = calloc(1, filesz);
+	if (!buf)
+		return buf;
+
+	if (filesz == 0) /* empty file */
+		return buf;
+
+	if (!(le32_to_cpu(inode.flags) & EXT4_EXTENTS_FL)) {
+		/* this is ext2 based filesystem */
+		ret = load_file_from_dir_blocks(p, &inode, ino, buf, filesz);
+		if (ret < 0) {
+			free(buf);
+			return NULL;
+		}
+
+		return buf;
+	}
+
+	ret = extent_iterator_init(p, &it, ino);
+	if (ret < 0) {
+		free(buf);
+		return NULL;
+	}
+
+	extent_list_foreach(&it) {
+		struct ext4_extent *ee = it.ee;
+		size_t bytes = p->block_size * le16_to_cpu(ee->ee_len);
+
+		if (bytes > filesz)
+			bytes = filesz;
+
+		lseek64(p->fd,
+			ext4_extent_start_block(ee) * p->block_size,
+			SEEK_SET);
+
+		read(p->fd,
+		     buf + le32_to_cpu(ee->ee_block) * p->block_size,
+		     bytes);
+
+		filesz -= bytes;
+	}
+	extent_iterator_exit(&it);
+
+	return buf;
 }
 
 static int unpack_dirent(struct ext2_editor_private_data *p, uint32_t ino,
