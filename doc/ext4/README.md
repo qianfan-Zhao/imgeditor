@@ -8,3 +8,4 @@ ext4 文件系统底层数据结构
 + [leaf](./leaf.md)
 + [链接文件的存储方式](./link.md)
 + [chattr的底层原理](./chattr.md)
++ [日志](./journal.md)
