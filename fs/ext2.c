@@ -35,7 +35,7 @@ static void structure_item_print_ext2_unix_epoch(const char *print_name_fmt, con
 	structure_print_name(print_name_fmt, name);
 	localtime_r(&t, &tm);
 	strftime(buf, sizeof(buf), "%FT%T", &tm);
-	printf("%s\n", buf);
+	printf("%s (%ld)\n", buf, t);
 }
 
 static const struct structure_item ext2_sblock_structure[] = {
@@ -1605,6 +1605,35 @@ static int ext2_do_journal(void *private_data, int fd, int argc, char **argv)
 	return ret;
 }
 
+static int ext2_do_orphan(void *private_data, int fd, int argc, char **argv)
+{
+	struct ext2_editor_private_data *p = private_data;
+	uint32_t total_inodes = le32_to_cpu(p->sblock.total_inodes);
+
+	for (uint32_t i = 1; i < total_inodes; i++) {
+		struct ext2_inode inode;
+		uint32_t dtime;
+		int ret;
+
+		ret = ext2_read_inode(p, i, &inode);
+		if (ret < 0) {
+			fprintf(stderr, "Warnning: scan not completed. "
+					"%d/%d\n",
+				i, total_inodes);
+			break;
+		}
+
+		if (be16_to_cpu(inode.nlinks)) /* inode was alive */
+			continue;
+
+		dtime = le32_to_cpu(inode.dtime);
+		if (dtime && dtime < total_inodes)
+			printf("inode #%-6d in orphan list\n", i);
+	}
+
+	return 0;
+}
+
 static int ext2_main(void *private_data, int fd, int argc, char **argv)
 {
 	if (argc >= 1) {
@@ -1622,6 +1651,8 @@ static int ext2_main(void *private_data, int fd, int argc, char **argv)
 			return ext2_do_extent(private_data, fd, argc, argv);
 		else if (!strcmp(argv[0], "journal"))
 			return ext2_do_journal(private_data, fd, argc, argv);
+		else if (!strcmp(argv[0], "orphan"))
+			return ext2_do_orphan(private_data, fd, argc, argv);
 	}
 
 	return ext2_do_list(private_data, fd, argc, argv);
