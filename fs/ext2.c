@@ -1717,7 +1717,7 @@ static int unpack_file_from_dir_blocks(struct ext2_editor_private_data *p,
 		goto done;
 	}
 
-	for (size_t i = 0; i < b.total && copied < filesize; i++) {
+	for (size_t i = 0; i < b.total && filesize > 0; i++) {
 		uint32_t chunk_sz = filesize;
 
 		if (chunk_sz > p->block_size)
@@ -1726,6 +1726,7 @@ static int unpack_file_from_dir_blocks(struct ext2_editor_private_data *p,
 		dd(p->fd, fd, b.blocks[i] * p->block_size, copied, chunk_sz,
 		   NULL, NULL);
 
+		filesize -= chunk_sz;
 		copied += chunk_sz;
 	}
 

@@ -77,6 +77,16 @@ function simple_abc() {
     )
 }
 
+function file_unaligned() {
+    (
+        cd $1
+
+        dd if=/dev/urandom of=a bs=34 count=1
+        dd if=/dev/urandom of=b bs=4097 count=1
+        dd if=/dev/urandom of=c bs=8193 count=1
+    )
+}
+
 function many_files() {
     (
         cd $1
@@ -146,6 +156,7 @@ function large_file() {
 }
 
 imgeditor_unpack_ext4_test simple_abc 16MiB || exit $?
+imgeditor_unpack_ext4_test file_unaligned 16MiB || exit $?
 imgeditor_unpack_ext4_test many_files 16MiB || exit $?
 imgeditor_unpack_ext4_test many_longname_files 64MiB || exit $?
 imgeditor_unpack_ext4_test simple_link 16MiB || exit $?
