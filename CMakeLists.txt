@@ -88,7 +88,11 @@ macro(require_program execname)
 endmacro()
 
 if (ENABLE_ANDROID OR ENABLE_ALL)
-        list(APPEND src android/android_bootimg.c android/android_sparse.c)
+        list(APPEND src
+                android/android_bootimg.c
+                android/android_sparse.c
+                android/dtimg.c
+        )
 
         list(APPEND tests
                 android/bootimg/test.sh
