@@ -91,8 +91,12 @@ if (ENABLE_ANDROID OR ENABLE_ALL)
         list(APPEND src
                 android/android_bootimg.c
                 android/android_sparse.c
-                android/dtimg.c
         )
+
+        if (ENABLE_FDT OR ENABLE_ALL)
+                # dtimg need fdt
+                list(APPEND src android/dtimg.c)
+        endif()
 
         list(APPEND tests
                 android/bootimg/test.sh

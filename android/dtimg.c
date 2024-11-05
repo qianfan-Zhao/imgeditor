@@ -5,8 +5,10 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 #include "imgeditor.h"
 #include "structure.h"
+#include "fdt/fdt_export.h"
 
 #define PRINT_LEVEL0					"%-30s: "
 #define PRINT_LEVEL1					"    %-26s: "
@@ -251,6 +253,26 @@ static uint32_t dtimg_get_default_custom(struct dtimg_private_data *p,
 	return max;
 }
 
+static int dtimg_dtbo_get_global(struct fdt_editor_private_data *fdt,
+				 uint32_t *ret_board_id,
+				 uint32_t *ret_board_rev)
+{
+	struct device_node *node;
+
+	*ret_board_id = 0;
+	*ret_board_rev = 0;
+
+	node = device_node_find_byname(fdt->root, "board_id");
+	if (node)
+		device_node_read_u32(node, ret_board_id);
+
+	node = device_node_find_byname(fdt->root, "board_rev");
+	if (node)
+		device_node_read_u32(node, ret_board_rev);
+
+	return 0;
+}
+
 #define dtimg_unpack_entry_section(fp, e, sec, name, def) do {			\
 	if (be32_to_cpu(e->sec) != def) {					\
 		fprintf(fp, "  %s=0x%x\n", name, be32_to_cpu(e->sec));		\
@@ -263,6 +285,7 @@ static int dtimg_unpack(void *private_data, int fd, const char *outdir,
 	struct dtimg_private_data *p = private_data;
 	struct dt_table_entry *entry = p->entries;
 	char filename[1024];
+	int ret = 0;
 	FILE *fp;
 
 	snprintf(filename, sizeof(filename), "%s/dtboimg.cfg", outdir);
@@ -273,6 +296,9 @@ static int dtimg_unpack(void *private_data, int fd, const char *outdir,
 	}
 
 	fprintf(fp, "# global options\n");
+	fprintf(fp, "  id=/:board_id\n");
+	fprintf(fp, "  rev=/:board_rev\n");
+
 	for (int custom_idx = 0; custom_idx < 4; custom_idx++) {
 		uint32_t def = dtimg_get_default_custom(p, custom_idx);
 
@@ -282,12 +308,27 @@ static int dtimg_unpack(void *private_data, int fd, const char *outdir,
 
 	fprintf(fp, "\n# entries");
 	for (unsigned i = 0; i < be32_to_cpu(p->header.dt_entry_count); i++) {
-		int fd_dtbo;
+		struct fdt_editor_private_data fdt = { 0 };
+		uint32_t board_id, board_rev;
+		int vfd, fd_dtbo;
+
+		vfd = virtual_file_dup(fd, be32_to_cpu(entry->dt_offset));
+		if (!vfd) {
+			ret = vfd;
+			break;
+		}
+
+		ret = fdt_editor_detect(&fdt, 1, vfd);
+		if (ret < 0) {
+			virtual_file_close(vfd);
+			break;
+		}
 
 		fprintf(fp, "\nboard%d.dtbo\n", i + 1);
+		dtimg_dtbo_get_global(&fdt, &board_id, &board_rev);
 
-		dtimg_unpack_entry_section(fp, entry, id, "id", 0);
-		dtimg_unpack_entry_section(fp, entry, rev, "rev", 0);
+		dtimg_unpack_entry_section(fp, entry, id, "id", board_id);
+		dtimg_unpack_entry_section(fp, entry, rev, "rev", board_rev);
 		dtimg_unpack_entry_section(fp, entry, custom[0], "custom0",
 					   dtimg_get_default_custom(p, 0));
 		dtimg_unpack_entry_section(fp, entry, custom[1], "custom1",
@@ -297,11 +338,16 @@ static int dtimg_unpack(void *private_data, int fd, const char *outdir,
 		dtimg_unpack_entry_section(fp, entry, custom[3], "custom3",
 					   dtimg_get_default_custom(p, 3));
 
+		fdt_editor_exit(&fdt);
+		virtual_file_close(vfd);
+
 		snprintf(filename, sizeof(filename), "%s/board%d.dtbo",
 			 outdir, i + 1);
 		fd_dtbo = fileopen(filename, O_RDWR | O_CREAT | O_TRUNC, 0664);
-		if (fd_dtbo < 0)
-			return fd_dtbo;
+		if (fd_dtbo < 0) {
+			ret = fd_dtbo;
+			break;
+		}
 
 		dd(fd, fd_dtbo, be32_to_cpu(entry->dt_offset), 0,
 			be32_to_cpu(entry->dt_size), NULL, NULL);
@@ -311,7 +357,7 @@ static int dtimg_unpack(void *private_data, int fd, const char *outdir,
 	}
 
 	fclose(fp);
-	return 0;
+	return ret;
 }
 
 static struct imgeditor dtimg_editor = {
