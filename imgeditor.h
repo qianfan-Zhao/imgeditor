@@ -97,7 +97,7 @@ struct imgeditor {
 	struct imgmagic		search_magic;
 };
 
-#define IMGEDITOR_PLUGIN_STRUCT_VERSION	0x104
+#define IMGEDITOR_PLUGIN_STRUCT_VERSION	0x105 /* exini changed */
 
 void register_imgeditor(struct imgeditor *editor);
 

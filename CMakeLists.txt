@@ -93,15 +93,18 @@ if (ENABLE_ANDROID OR ENABLE_ALL)
                 android/android_sparse.c
         )
 
-        if (ENABLE_FDT OR ENABLE_ALL)
-                # dtimg need fdt
-                list(APPEND src android/dtimg.c)
-        endif()
-
         list(APPEND tests
                 android/bootimg/test.sh
                 android/sparse/test.sh
         )
+
+        if (ENABLE_FDT OR ENABLE_ALL)
+                # dtimg need fdt
+                list(APPEND src android/dtimg.c)
+                list(APPEND tests android/dtimg/test.sh)
+
+                require_program(dtc)
+        endif()
 
         require_program(img2simg)
 endif()

@@ -8,6 +8,8 @@
 #include <string.h>
 #include "imgeditor.h"
 #include "structure.h"
+#include "exini.h"
+#include "string_helper.h"
 #include "fdt/fdt_export.h"
 
 #define PRINT_LEVEL0					"%-30s: "
@@ -360,6 +362,226 @@ static int dtimg_unpack(void *private_data, int fd, const char *outdir,
 	return ret;
 }
 
+static unsigned long dtimg_entry_read_ulong(struct exini_section *global_option,
+					    struct exini_section *section,
+					    const char *id,
+					    int *err)
+{
+	unsigned long n = 0;
+
+	n = exini_section_read_ulong(section, id, n, err);
+	if (*err == 0)
+		return n;
+
+	return exini_section_read_ulong(global_option, id, n, err);
+}
+
+/* # global options
+ *  id=/:board_id
+ *  rev=/:board_rev
+ *  custom0=0xabc
+ */
+static int dtimg_init_entry_from_dt(struct fdt_editor_private_data *fdt,
+				    struct exini_section *global_option,
+				    struct exini_section *section,
+				    const char *id,
+				    __be32 *ret_number)
+{
+	struct device_node *node;
+	char nonconst_fdtpath[128];
+	const char *fdtpath;
+	uint32_t n;
+	int err;
+
+	fdtpath = exini_section_read_string(section, id, NULL, 1, &err);
+	if (fdtpath)
+		goto skip_global_option;
+
+	fdtpath = exini_section_read_string(global_option, id, NULL, 1, &err);
+	if (err == EXINI_ERR_BAD_TYPE) {
+		fprintf(stderr, "Error: read global option's %s "
+			"failed with bad type\n",
+			id);
+		return -err;
+	}
+
+	if (!fdtpath) /* no such configuration */
+		return 0;
+
+skip_global_option:
+	strncpy(nonconst_fdtpath, fdtpath, sizeof(nonconst_fdtpath) - 1);
+	string_replace_in_buffer(nonconst_fdtpath, sizeof(nonconst_fdtpath),
+				":", "");
+
+	node = device_node_find_bypath(fdt->root, nonconst_fdtpath);
+	if (!node) /* it's OK if this value is not defined in fdt */
+		return 0;
+
+	err = device_node_read_u32(node, &n);
+	if (err < 0) {
+		fprintf(stderr, "Error: %s in fdt is not a number\n",
+			nonconst_fdtpath);
+		return err;
+	}
+
+	*ret_number = cpu_to_be32(n);
+	return 0;
+}
+
+static int dtimg_init_entry(int fd_dtb, struct dt_table_entry *entry,
+			    struct exini_section *global_option,
+			    struct exini_section *section)
+{
+	struct fdt_editor_private_data fdt = { 0 };
+	int err_id = 0, err_rev = 0, err = 0;
+	int ret;
+	unsigned long n;
+
+	ret = fdt_editor_detect(&fdt, 1, fd_dtb);
+	if (ret < 0)
+		return ret;
+
+	/* try id first */
+	n = dtimg_entry_read_ulong(global_option, section, "id", &err_id);
+	if (err_id == 0) {
+		entry->id = cpu_to_be32(n);
+	} else if (err_id == EXINI_ERR_BAD_TYPE) {
+		ret = dtimg_init_entry_from_dt(&fdt, global_option, section,
+					       "id", &entry->id);
+		if (ret < 0)
+			goto done;
+	}
+
+	n = dtimg_entry_read_ulong(global_option, section, "rev", &err_rev);
+	if (err_rev == 0) {
+		entry->rev = cpu_to_be32(n);
+	} else if (err_rev == EXINI_ERR_BAD_TYPE) {
+		ret = dtimg_init_entry_from_dt(&fdt, global_option, section,
+					       "rev", &entry->rev);
+		if (ret < 0)
+			goto done;
+	}
+
+	for (unsigned i = 0; i < 4; i++) {
+		char id[32];
+
+		snprintf(id, sizeof(id), "custom%d", i);
+		n = dtimg_entry_read_ulong(global_option, section, id, &err);
+		if (err == EXINI_ERR_BAD_TYPE) {
+			fprintf(stderr, "Error: %s/%s is not number\n",
+				section->name, id);
+			return -err;
+		}
+
+		entry->custom[i] = cpu_to_be32(n);
+	}
+
+done:
+	fdt_editor_exit(&fdt);
+	return ret;
+}
+
+static int dtimg_pack(void *private_data, const char *dir, int fd_outimg,
+		      int argc, char **argv)
+{
+	struct dtimg_private_data *p = private_data;
+	struct dt_table_entry *entries;
+	struct exini dtbocfg = { .enable_unknown_data = 1 };
+	struct exini_section *section, *global_option;
+	uint32_t data_offset = 0;
+	char filename[1024];
+	FILE *fp;
+	int ret;
+
+	snprintf(filename, sizeof(filename), "%s/dtboimg.cfg", dir);
+	fp = fopen(filename, "r");
+	if (!fp) {
+		fprintf(stderr, "Error: open %s failed\n", filename);
+		return -1;
+	}
+
+	ret = exini_load(&dtbocfg, fp, EXINI_QUIRK_DTBOCFG);
+	fclose(fp);
+	if (ret < 0)
+		return ret;
+
+	global_option = exini_find_section(&dtbocfg, "__global_option");
+	if (!global_option) {
+		fprintf(stderr, "Error: global option is not found\n");
+		ret = -1;
+		goto done;
+	}
+
+	p->entries = calloc(dtbocfg.total_sections - 1, /* not include global option */
+			    sizeof(struct dt_table_entry));
+	if (!p->entries) {
+		fprintf(stderr, "Error: alloc %zu entries failed\n",
+			dtbocfg.total_sections - 1);
+		ret = -1;
+		goto done;
+	}
+
+	p->header.magic = cpu_to_be32(DT_TABLE_MAGIC);
+	p->header.header_size = cpu_to_be32(sizeof(struct dt_table_header));
+	p->header.dt_entry_count = cpu_to_be32(dtbocfg.total_sections - 1);
+	p->header.dt_entry_size = cpu_to_be32(sizeof(struct dt_table_entry));
+	p->header.dt_entries_offset = cpu_to_be32(sizeof(struct dt_table_header));
+	p->header.page_size = cpu_to_be32(DT_TABLE_DEFAULT_PAGE_SIZE);
+	p->header.version = cpu_to_be32(DT_TABLE_DEFAULT_VERSION);
+
+	entries = p->entries;
+	data_offset += be32_to_cpu(p->header.header_size);
+	data_offset += be32_to_cpu(p->header.dt_entry_size)
+		* be32_to_cpu(p->header.dt_entry_count);
+
+	list_for_each_entry(section, &dtbocfg.sections, head,
+			    struct exini_section) {
+		/* -1: not include global option */
+		struct dt_table_entry *entry = &entries[section->global_index - 1];
+		uint32_t length;
+		int fd_dtb;
+
+		if (!strcmp(section->name, "__global_option"))
+			continue;
+
+		entry->dt_offset = cpu_to_be32(data_offset);
+
+		snprintf(filename, sizeof(filename), "%s/%s", dir, section->name);
+		fd_dtb = fileopen(filename, O_RDONLY, 0);
+		if (fd_dtb < 0) {
+			ret = fd_dtb;
+			break;
+		}
+
+		ret = dtimg_init_entry(fd_dtb, entry, global_option, section);
+		if (ret < 0) {
+			fprintf(stderr, "Error: init %s entry failed\n",
+				section->name);
+			close(fd_dtb);
+			break;
+		}
+
+		length = (uint32_t)filelength(fd_dtb);
+		entry->dt_size = cpu_to_be32(length);
+		dd(fd_dtb, fd_outimg, 0, data_offset, length, NULL, NULL);
+		close(fd_dtb);
+
+		data_offset += length;
+	}
+
+	p->header.total_size = cpu_to_be32(data_offset);
+
+	fileseek(fd_outimg, 0);
+	write(fd_outimg, &p->header, sizeof(p->header));
+	write(fd_outimg, p->entries,
+		be32_to_cpu(p->header.dt_entry_size)
+		* be32_to_cpu(p->header.dt_entry_count));
+
+done:
+	exini_free(&dtbocfg);
+	return ret;
+}
+
 static struct imgeditor dtimg_editor = {
 	.name			= "adtimg",
 	.descriptor		= "android mkdtimg editor",
@@ -371,6 +593,7 @@ static struct imgeditor dtimg_editor = {
 	.total_size		= dtimg_total_size,
 	.summary		= dtimg_summary,
 	.unpack			= dtimg_unpack,
+	.pack			= dtimg_pack,
 
 	.search_magic		= {
 		.magic		= dt_table_magic,
