@@ -10,6 +10,7 @@
 #include "structure.h"
 #include "list_head.h"
 #include "string_helper.h"
+#include "fdt_export.h"
 
 /*
  * U-boot mkimage is based on fdt, it maybe containes some images which
@@ -17,33 +18,9 @@
  */
 #define FDT_EDITOR_MAX_DTB_SIZE		(64 << 20) /* 64MiB */
 
-typedef uint32_t			fdt32_t;
-typedef uint64_t			fdt64_t;
-#define fdt32_to_cpu(x)			be32_to_cpu(x)
-#define fdt64_to_cpu(x)			be64_to_cpu(x)
-
 #define FDT_MAGIC	0xd00dfeed	/* 4: version, 4: total size */
 
 static uint8_t fdt_magic_be32[] = { 0xd0, 0x0d, 0xfe, 0xed };
-
-struct fdt_header {
-	fdt32_t magic;			 /* magic word FDT_MAGIC */
-	fdt32_t totalsize;		 /* total size of DT block */
-	fdt32_t off_dt_struct;		 /* offset to structure */
-	fdt32_t off_dt_strings;		 /* offset to strings */
-	fdt32_t off_mem_rsvmap;		 /* offset to memory reserve map */
-	fdt32_t version;		 /* format version */
-	fdt32_t last_comp_version;	 /* last compatible version */
-
-	/* version 2 fields below */
-	fdt32_t boot_cpuid_phys;	 /* Which physical CPU id we're
-					    booting on */
-	/* version 3 fields below */
-	fdt32_t size_dt_strings;	 /* size of the strings block */
-
-	/* version 17 fields below */
-	fdt32_t size_dt_struct;		 /* size of the structure block */
-};
 
 static struct structure_item structure_fdt_header[] = {
 	STRUCTURE_ITEM(struct fdt_header, totalsize,		structure_item_print_be_xunsigned),
@@ -81,13 +58,6 @@ struct fdt_property {
 					   size, content */
 #define FDT_NOP		0x4		/* nop */
 #define FDT_END		0x9
-
-struct fdt_editor_private_data {
-	void				*dtb;
-	uint32_t			totalsize;
-
-	struct device_node		*root;
-};
 
 static int fdt_prop_print_multi_strings(FILE *fp, const char *ms, int sz)
 {
@@ -193,17 +163,6 @@ static int fdt_prop_print_value(FILE *fp, void *data, int sz)
 	return 0;
 }
 
-/*
- * fit image editor for u-boot mkimage tools.
- */
-struct device_node {
-	char				name[64];
-	struct list_head		head;
-	struct list_head		child;
-	size_t				data_size;
-	uint8_t				data[0];
-};
-
 static struct device_node *new_device_node(const char *name, int data_size,
 					   struct device_node *parent)
 {
@@ -226,7 +185,7 @@ static struct device_node *new_device_node(const char *name, int data_size,
 
 #define FDT_MAX_DEPTH		32
 
-static struct device_node *
+struct device_node *
 	device_node_find_byname(struct device_node *root, const char *name)
 {
 	struct device_node *node;
@@ -239,7 +198,7 @@ static struct device_node *
 	return NULL;
 }
 
-static struct device_node *
+struct device_node *
 	device_node_find_bypath(struct device_node *root, const char *path)
 {
 	char path_nonconst[strlen(path) + 1], *path_argv[FDT_MAX_DEPTH];
@@ -262,7 +221,7 @@ static struct device_node *
 	return root;
 }
 
-static int device_node_read_u32(struct device_node *node, uint32_t *ret_data)
+int device_node_read_u32(struct device_node *node, uint32_t *ret_data)
 {
 	if (node->data_size != sizeof(uint32_t))
 		return -1;
@@ -276,7 +235,7 @@ static int device_node_read_u32(struct device_node *node, uint32_t *ret_data)
 }
 
 /* delete and free all the child */
-static int device_node_delete(struct device_node *root)
+int device_node_delete(struct device_node *root)
 {
 	struct device_node *node, *next;
 
@@ -289,7 +248,7 @@ static int device_node_delete(struct device_node *root)
 	return 0;
 }
 
-static int device_node_delete_bypath(struct device_node *root, const char *path)
+int device_node_delete_bypath(struct device_node *root, const char *path)
 {
 	struct device_node *node = device_node_find_bypath(root, path);
 
@@ -436,6 +395,11 @@ static int fdt_detect(void *private_data, int force_type, int fd)
 	return fdt_unflatten(fdt);
 }
 
+int fdt_editor_detect(struct fdt_editor_private_data *p, int force_type, int fd)
+{
+	return fdt_detect(p, force_type, fd);
+}
+
 static int64_t fdt_get_total_size(void *private_data, int fd)
 {
 	struct fdt_editor_private_data *fdt = private_data;
@@ -460,6 +424,11 @@ static void fdt_exit(void *private_data)
 
 	if (p->root)
 		device_node_delete(p->root);
+}
+
+void fdt_editor_exit(struct fdt_editor_private_data *p)
+{
+	fdt_exit(p);
 }
 
 static int fdt_list_node_prop(struct device_node *prop, FILE *fp, int depth)
