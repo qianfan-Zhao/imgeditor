@@ -12,6 +12,9 @@
 #include "string_helper.h"
 #include "fdt_export.h"
 
+#define FDT_SYMBOLS_NAME		"__symbols__"
+#define FDT_ALIASES_NAME		"aliases"
+
 /*
  * U-boot mkimage is based on fdt, it maybe containes some images which
  * make the file size too large.
@@ -94,11 +97,8 @@ static int fdt_prop_print_multi_strings(FILE *fp, const char *ms, int sz)
 
 static int fdtprop_feature_incbin = 0;
 
-static int fdt_prop_print_value(FILE *fp, void *data, int sz)
+static int fdt_prop_print_simple_value(FILE *fp, void *data, int sz)
 {
-	uint32_t *p_u32 = data;
-	uint8_t *p_u8 = data;
-
 	/* bool prop, eg:
 	 * regulator-always-on;
 	 */
@@ -120,17 +120,76 @@ static int fdt_prop_print_value(FILE *fp, void *data, int sz)
 	if (!fdt_prop_print_multi_strings(fp, data, sz))
 		return 0;
 
+	return -1;
+}
+
+/* such as this array: 'interrupts = <0 36 4>'
+ *
+ * show in 'interrupts = <0 0x24 4>' is not good.
+ */
+static int fdt_prop_number_array_detect_base(fdt32_t *arrays, size_t count)
+{
+	size_t base10 = 0, base16 = 0;
+
+	for (size_t i = 0; i < count; i++) {
+		uint32_t n = fdt32_to_cpu(arrays[i]);
+
+		if (n <= 10 || (n % 10) == 0)
+			base10++;
+		else
+			base16++;
+	}
+
+	if (base16 > base10)
+		return 16;
+
+	return 10;
+}
+
+static int fdt_prop_print_number_autobase(FILE *fp, uint32_t n, int base)
+{
+	const char *format;
+
+	if (base == 10 || (base != 16 && (n <= 10u || n % 10 == 0)))
+		format = "%d";
+	else if (n > 0xffffff)
+		format = "0x%08x";
+	else if (n > 0xffff)
+		format = "0x%06x";
+	else if (n > 0xfff)
+		format = "0x%04x";
+	else if (n > 0xff)
+		format = "0x%03x";
+	else if (n > 0xf)
+		format = "0x%02x";
+	else
+		format = "0x%x";
+
+	fprintf(fp, format, n);
+	return 0;
+}
+
+static int fdt_prop_print_simple_number(FILE *fp, void *data, int sz)
+{
+	uint32_t *p_u32 = data;
+	uint8_t *p_u8 = data;
+
 	if ((sz % 4) == 0) {
 		int striped = 0, maxsz = sz / 4;
+		int base;
 
 		if (maxsz > 32) {
 			maxsz = 32;
 			striped = 1;
 		}
 
+		base = fdt_prop_number_array_detect_base(p_u32, maxsz);
+
 		fprintf(fp, " = <");
 		for (int i = 0; i < maxsz; i++) {
-			fprintf(fp, "0x%08x", fdt32_to_cpu(p_u32[i]));
+			uint32_t n = fdt32_to_cpu(p_u32[i]);
+
+			fdt_prop_print_number_autobase(fp, n, base);
 			if (i != maxsz - 1)
 				fprintf(fp, " ");
 		}
@@ -163,6 +222,334 @@ static int fdt_prop_print_value(FILE *fp, void *data, int sz)
 	return 0;
 }
 
+static int string_arrays_index(const char **arrays, const char *s)
+{
+	for (int i = 0; arrays[i]; i++) {
+		if (!strcmp(arrays[i], s))
+			return i;
+	}
+
+	return -1;
+}
+
+static const char *fdt_u32_prop_lists[] = {
+	"#address-cells",
+	"#clock-cells",
+	"#cooling-cells",
+	"#dma-cells",
+	"#gpio-cells",
+	"#interrupt-cells",
+	"#phy-cells",
+	"#pwm-cells",
+	"#reset-cells",
+	"#size-cells",
+	NULL,
+};
+
+static int fdt_prop_print_u32_number(FILE *fp, const char *propname,
+				     void *data, size_t data_size)
+{
+	fdt32_t *p_number = data;
+	int ret;
+
+	if (data_size != 4)
+		return -1;
+
+	ret = string_arrays_index(fdt_u32_prop_lists, propname);
+	if (ret < 0)
+		return ret;
+
+	fprintf(fp, " = <%d>;", fdt32_to_cpu(*p_number));
+	return 0;
+}
+
+static int fdt_prop_print_reg(FILE *fp, const char *propname, void *data,
+			      size_t data_size)
+{
+	fdt32_t *p = data;
+
+	if (strcmp(propname, "reg") != 0 || (data_size % 4) != 0)
+		return -1;
+
+	fprintf(fp, " = <");
+	for (size_t i = 0; i < data_size; i += 4) {
+		uint32_t n = fdt32_to_cpu(*p);
+		int base = n <= 10 ? 10 : 16;
+
+		fdt_prop_print_number_autobase(fp, n, base);
+		if (i != data_size - 4)
+			fprintf(fp, " ");
+
+		p++;
+	}
+	fprintf(fp, ">;");
+
+	return 0;
+}
+
+static int device_node_read_cells(struct device_node *node,
+				  const char *cell_name, uint32_t *cell_size)
+{
+	struct device_node *prop =
+		device_node_find_byname(node, cell_name);
+
+	if (!prop)
+		return -1;
+
+	return device_node_read_u32(prop, cell_size);
+}
+
+static int _fdt_prop_print_phandles(struct fdt_editor_private_data *fdt,
+				    const char *type_name, const char *cell_name,
+				    size_t fix_cell_size,
+				    FILE *fp,
+				    const char *propname,
+				    void *data, size_t data_size)
+{
+	/* osc24M: #clock-cells = <0>;
+	 * pll6:   #clock-cells = <1>;
+	 * clocks = <&osc24M>, <&pll6 1>, <&pll5 1>;
+	 */
+	if (data_size < 4)
+		return -1;
+
+	for (int check_only = 1; check_only >= 0; check_only--) {
+		size_t sz = data_size;
+		fdt32_t *p = data;
+
+		if (!check_only)
+			fprintf(fp, " = ");
+
+		while (sz >= 4) {
+			struct device_node *target;
+			uint32_t phandle = fdt32_to_cpu(*p);
+			uint32_t cell_size = fix_cell_size;
+			int ret;
+
+			sz -= 4;
+			p++;
+
+			target = device_node_search_phandle(fdt->root, phandle);
+			if (!target) {
+				fprintf(stderr, "Warnning: %s %d is not found\n",
+					type_name, phandle);
+				return -1;
+			}
+
+			/* doesn't has a label */
+			if (target->label[0] == '\0')
+				return -1;
+
+			if (cell_name) {
+				/* the default cell size is 0 */
+				ret = device_node_read_cells(target, cell_name,
+							     &cell_size);
+				if (ret < 0)
+					return ret;
+			}
+
+			if (cell_size * 4 > sz)
+				return -1;
+
+			if (!check_only)
+				fprintf(fp, "<&%s", target->label);
+
+			for (uint32_t i = 0; i < cell_size; i++) {
+				if (!check_only) {
+					uint32_t n = fdt32_to_cpu(*p);
+
+					if (n == 0xffffffff)
+						fprintf(fp, " (~0)");
+					else
+						fprintf(fp, " %u", fdt32_to_cpu(*p));
+				}
+
+				sz -= 4;
+				p++;
+			}
+
+			if (!check_only) {
+				fprintf(fp, ">");
+
+				if (sz > 0)
+					fprintf(fp, ", ");
+			}
+		}
+
+		if (!check_only)
+			fprintf(fp, ";");
+	}
+
+	return 0;
+}
+
+static int fdt_prop_print_phandles(struct fdt_editor_private_data *fdt,
+				   const char *type_name,
+				   const char *cell_name, size_t fix_cell_size,
+				   FILE *fp,
+				   const char *propname,
+				   void *data, size_t data_size)
+{
+	if (strcmp(type_name, propname) != 0)
+		return -1;
+
+	return _fdt_prop_print_phandles(fdt, type_name, cell_name, fix_cell_size,
+					fp, propname, data, data_size);
+}
+
+static int string_ending_in(const char *s, const char *match)
+{
+	size_t len = strlen(match);
+
+	return strlen(s) > len
+		&& !strcmp(s + strlen(s) - len, match);
+}
+
+static int fdt_prop_print_gpios(struct fdt_editor_private_data *fdt,
+				FILE *fp, const char *propname,
+				void *data, size_t data_size)
+{
+	int is_gpio = 0;
+
+	is_gpio |= !strcmp(propname, "gpio");
+	is_gpio |= !strcmp(propname, "gpios");
+	is_gpio |= string_ending_in(propname, "-gpio");
+	is_gpio |= string_ending_in(propname, "-gpios");
+
+	if (!is_gpio)
+		return -1;
+
+	return _fdt_prop_print_phandles(fdt, "gpios", "#gpio-cells", 0,
+					fp, propname, data, data_size);
+}
+
+static int fdt_prop_print_pinctrl(struct fdt_editor_private_data *fdt,
+				  FILE *fp, const char *propname,
+				  void *data, size_t data_size)
+{
+	/* pinctrl-0 or pinctrl-1 or pinctrl-x but not pinctrl-names */
+	char *endp;
+
+	if (strncmp(propname, "pinctrl-", 8) != 0)
+		return -1;
+
+	strtol(propname + 8, &endp, 10);
+	if (*endp != '\0')
+		return -1;
+
+	return _fdt_prop_print_phandles(fdt, "pinctrl", NULL, 0,
+					fp, propname, data, data_size);
+}
+
+static int fdt_prop_print_supply(struct fdt_editor_private_data *fdt,
+				 FILE *fp, const char *propname,
+				 void *data, size_t data_size)
+{
+	if (!string_ending_in(propname, "-supply"))
+		return -1;
+
+	return _fdt_prop_print_phandles(fdt, "supply", NULL, 0,
+					fp, propname, data, data_size);
+}
+
+static int fdt_prop_print_phandle_with_cells(struct fdt_editor_private_data *fdt,
+					     FILE *fp, const char *propname,
+					     void *data, size_t data_size)
+{
+	static const struct phandle_with_cell {
+		const char *name;
+		const char *cell_name;
+	} phandles[] = {
+		{ "clocks", "#clock-cells" },
+		{ "dmas", "#dma-cells" },
+		{ "resets", "#reset-cells" },
+		{ "phys", "#phy-cells" },
+		{ "pwms", "#pwm-cells" },
+		{ "thermal-sensors", "#thermal-sensor-cells" },
+		{ "cooling-device", "#cooling-cells" },
+		{ "interconnects", "#interconnect-cells" },
+		{ "power-domains", "#power-domain-cells" },
+		{ NULL, NULL },
+	};
+
+	for (size_t i = 0; phandles[i].name; i++) {
+		int ret = fdt_prop_print_phandles(fdt,
+						  phandles[i].name,
+						  phandles[i].cell_name, 0,
+						  fp, propname, data, data_size);
+		if (ret == 0)
+			return ret;
+	}
+
+	return -1;
+}
+
+static int fdt_prop_print_phandle_fix_cells(struct fdt_editor_private_data *fdt,
+					    FILE *fp, const char *propname,
+					    void *data, size_t data_size)
+{
+	/* allwinner,sram = <&ve_sram 1>; */
+
+	static const struct phandle_with_fix_cells {
+		const char *name;
+		size_t fix_cell_size;
+	} phandles[] = {
+		{ "allwinner,sram", 1 },
+		{ NULL, 0 },
+	};
+
+	for (size_t i = 0; phandles[i].name; i++) {
+		int ret = fdt_prop_print_phandles(fdt,
+						  phandles[i].name,
+						  NULL, phandles[i].fix_cell_size,
+						  fp, propname, data, data_size);
+		if (ret == 0)
+			return ret;
+	}
+
+	return -1;
+}
+
+static int fdt_prop_print_phandle_nocells(struct fdt_editor_private_data *fdt,
+					  FILE *fp, const char *propname,
+					  void *data, size_t data_size)
+{
+	int phandle_index;
+
+	/* emac {
+	 *   phy = <&phy1>;
+	 *   status = "okay";
+	 * };
+	 *
+	 * allwinner,pipelines = <&mixer0>, <&mixer1>;
+	 * trip = <&cpu_hot_trip>;
+	 * remote-endpoint = <&mixer0_out_tcon_top>;
+	 * interrupt-affinity = <&cpu0>, <&cpu1>, <&cpu2>, <&cpu3>;
+	 * operating-points-v2 = <&cpu0_opp_table>;
+	 * syscon = <&ccu>;
+	 * cpu-idle-states = <&CPU_SLEEP_0 &CLUSTER_SLEEP_0>;
+	 */
+	static const char *phandles[] = {
+		"phy",
+		"allwinner,pipelines",
+		"interrupt-parent",
+		"trip",
+		"remote-endpoint",
+		"interrupt-affinity",
+		"operating-points-v2",
+		"syscon",
+		"cpu-idle-states",
+		NULL,
+	};
+
+	phandle_index = string_arrays_index(phandles, propname);
+	if (phandle_index < 0)
+		return phandle_index;
+
+	return _fdt_prop_print_phandles(fdt, phandles[phandle_index], NULL, 0,
+					fp, propname, data, data_size);
+}
+
 static struct device_node *new_device_node(const char *name, int data_size,
 					   struct device_node *parent)
 {
@@ -193,6 +580,44 @@ struct device_node *
 	list_for_each_entry(node, &root->child, head, struct device_node) {
 		if (!strcmp(node->name, name))
 			return node;
+	}
+
+	return NULL;
+}
+
+static int device_node_match_phandle(struct device_node *node, uint32_t phandle)
+{
+	struct device_node *prop;
+
+	list_for_each_entry(prop, &node->child, head, struct device_node) {
+		if (!strcmp(prop->name, "phandle") && prop->data_size == 4) {
+			uint32_t n = phandle - 1; /* not eq */
+
+			device_node_read_u32(prop, &n);
+			if (n == phandle) /* matched */
+				return 0;
+		}
+	}
+
+	return -1;
+}
+
+struct device_node *
+	device_node_search_phandle(struct device_node *root, uint32_t phandle)
+{
+	struct device_node *node;
+
+	list_for_each_entry(node, &root->child, head, struct device_node) {
+		struct device_node *matched;
+
+		if (device_node_match_phandle(node, phandle) == 0)
+			return node;
+
+		if (!list_empty(&node->child)) {
+			matched = device_node_search_phandle(node, phandle);
+			if (matched)
+				return matched;
+		}
 	}
 
 	return NULL;
@@ -258,6 +683,44 @@ int device_node_delete_bypath(struct device_node *root, const char *path)
 	return device_node_delete(node);
 }
 
+/* The dtc will create a section named as "__symbols__" if '-@|--symbols'
+ * is enabled when compile dts.
+ */
+static int fdt_load_symbols(struct fdt_editor_private_data *fdt)
+{
+	struct device_node *symbols
+		= device_node_find_byname(fdt->root, FDT_SYMBOLS_NAME);
+	struct device_node *sym;
+
+	if (!symbols)
+		return 0;
+
+	/* __symbols__ {
+	 *   dummy = "/clocks/dummy";
+	 *   osc24M = "/clocks/clk@01c20050";
+	 *   osc32k = "/clocks/clk@0";
+	 */
+	list_for_each_entry(sym, &symbols->child, head, struct device_node) {
+		struct device_node *target;
+		char devpath[256];
+
+		snprintf(devpath, sizeof(devpath), "%.*s",
+			 (int)sym->data_size, (const char *)sym->data);
+		target = device_node_find_bypath(fdt->root, devpath);
+
+		if (!target) {
+			fprintf(stderr, "Warnning: target of symbol %s is "
+				"not found\n",
+				sym->name);
+			continue;
+		}
+
+		snprintf(target->label, sizeof(target->label), "%s", sym->name);
+	}
+
+	return 0;
+}
+
 static int fdt_unflatten(struct fdt_editor_private_data *fdt)
 {
 	struct device_node *root = NULL, *fdt_device_node_stack[FDT_MAX_DEPTH];
@@ -296,6 +759,8 @@ static int fdt_unflatten(struct fdt_editor_private_data *fdt)
 				fprintf(stderr, "Error: alloc device node failed\n");
 				return -1;
 			}
+
+			root->is_node = 1;
 
 			if (depth == 1) /* this is root node */
 				fdt->root = root;
@@ -342,6 +807,7 @@ static int fdt_unflatten(struct fdt_editor_private_data *fdt)
 		node = (void *)node + nodesz;
 	}
 
+	fdt_load_symbols(fdt);
 	return 0;
 }
 
@@ -431,33 +897,130 @@ void fdt_editor_exit(struct fdt_editor_private_data *p)
 	fdt_exit(p);
 }
 
-static int fdt_list_node_prop(struct device_node *prop, FILE *fp, int depth)
+static int fdt_list_node_prop(struct fdt_editor_private_data *fdt,
+			      struct device_node *prop, FILE *fp, int depth)
 {
 	int ret;
 
-	fprintf(fp, "%*s%s", depth * 4, "", prop->name);
-	ret = fdt_prop_print_value(fp, prop->data, prop->data_size);
-	fprintf(fp, "\n");
+	if (!strcmp(prop->name, "phandle") && !fdt->keep_phandle)
+		return 0;
 
+	fprintf(fp, "%*s%s", depth * 4, "", prop->name);
+
+#define try(todo, ...) do {		\
+	ret = todo(__VA_ARGS__);	\
+	if (ret == 0)			\
+		goto done;		\
+} while (0)
+
+	try(fdt_prop_print_simple_value, fp, prop->data, prop->data_size);
+	try(fdt_prop_print_u32_number, fp, prop->name, prop->data, prop->data_size);
+	try(fdt_prop_print_reg, fp, prop->name, prop->data, prop->data_size);
+
+	if (get_verbose_level() == 0) {
+		try(fdt_prop_print_phandle_nocells, fdt,
+		    fp, prop->name, prop->data, prop->data_size);
+
+		try(fdt_prop_print_gpios, fdt,
+		    fp, prop->name, prop->data, prop->data_size);
+
+		try(fdt_prop_print_pinctrl, fdt,
+		    fp, prop->name, prop->data, prop->data_size);
+
+		try(fdt_prop_print_supply, fdt,
+		    fp, prop->name, prop->data, prop->data_size);
+
+		try(fdt_prop_print_phandle_with_cells, fdt,
+		    fp, prop->name, prop->data, prop->data_size);
+
+		try(fdt_prop_print_phandle_fix_cells, fdt,
+		    fp, prop->name, prop->data, prop->data_size);
+	}
+#undef try
+
+	ret = fdt_prop_print_simple_number(fp, prop->data, prop->data_size);
+done:
+	fprintf(fp, "\n");
 	return ret;
 }
 
-static int fdt_list_node(struct device_node *root, FILE *fp, int depth)
+/*
+ * aliases {
+ *   ethernet0 = "/soc@01c00000/ethernet@01c0b000";
+ *   serial0 = "/soc@01c00000/serial@01c28000";
+ */
+static int fdt_list_alias_nodes(struct fdt_editor_private_data *fdt,
+				struct device_node *symbols,
+				struct device_node *aliases, FILE *fp, int depth)
+{
+	struct device_node *prop;
+
+	list_for_each_entry(prop, &aliases->child, head, struct device_node) {
+		struct device_node *target;
+		char devpath[256];
+
+		snprintf(devpath, sizeof(devpath), "%.*s",
+			 (int)prop->data_size, (const char *)prop->data);
+
+		target = device_node_find_bypath(fdt->root, devpath);
+		if (!target) {
+			fprintf(stderr, "Warnning: alias %s's target is not"
+				" found\n", prop->name);
+			fdt_list_node_prop(fdt, prop, fp, depth);
+		} else if (target->label[0] == '\0') {
+			fprintf(stderr, "Warnning: alias %s's target doesn't"
+				" has a label\n", prop->name);
+			fdt_list_node_prop(fdt, prop, fp, depth);
+		} else {
+			fprintf(fp, "%*s%s = &%s;\n",
+				depth * 4, "",
+				prop->name,
+				target->label);
+		}
+	}
+
+	return 0;
+}
+
+static int fdt_list_node(struct fdt_editor_private_data *fdt,
+			 struct device_node *root,
+			 FILE *fp, int depth)
 {
 	struct device_node *dev;
+	int ret = 0;
 
-	if (list_empty(&root->child))
-		return fdt_list_node_prop(root, fp, depth);
+	if (!strcmp(root->name, FDT_SYMBOLS_NAME) && !fdt->keep_symbols)
+		return 0;
 
-	fprintf(fp, "%*s%s {\n", depth * 4, "", root->name);
+	if (!root->is_node && list_empty(&root->child))
+		return fdt_list_node_prop(fdt, root, fp, depth);
+
+	fprintf(fp, "\n");
+	fprintf(fp, "%*s", depth * 4, "");
+	if (root->label[0] != '\0')
+		fprintf(fp, "%s: ", root->label);
+	fprintf(fp, "%s {\n", root->name);
+
+	if (!strcmp(root->name, FDT_ALIASES_NAME) && !fdt->keep_symbols) {
+		struct device_node *symbols =
+			device_node_find_byname(fdt->root, FDT_SYMBOLS_NAME);
+
+		if (symbols) {
+			ret = fdt_list_alias_nodes(fdt, symbols, root,
+						   fp, depth + 1);
+			goto skip_childs;
+		}
+	}
+
 	list_for_each_entry(dev, &root->child, head, struct device_node) {
-		int ret = fdt_list_node(dev, fp, depth + 1);
+		ret = fdt_list_node(fdt, dev, fp, depth + 1);
 		if (ret < 0)
 			return ret;
 	}
-	fprintf(fp, "%*s};\n", depth * 4, "");
 
-	return 0;
+skip_childs:
+	fprintf(fp, "%*s};\n", depth * 4, "");
+	return ret;
 }
 
 static int fdt_show_memreserve(struct fdt_editor_private_data *fdt)
@@ -492,8 +1055,12 @@ static int fdt_list(void *private_data, int fd, int argc, char **argv)
 	struct device_node *root;
 	const char *path = "/";
 
-	if (get_verbose_level() > 0)
+	if (get_verbose_level() > 0) {
 		structure_print("%-20s", fdt->dtb, structure_fdt_header);
+		fdt->keep_symbols = 1;
+		fdt->keep_aliases = 1;
+		fdt->keep_phandle = 1;
+	}
 
 	/* imgeditor xxx -- "/images/kernel" */
 	if (argc > 0) {
@@ -509,7 +1076,7 @@ static int fdt_list(void *private_data, int fd, int argc, char **argv)
 		return -1;
 	}
 
-	return fdt_list_node(root, stdout, 0);
+	return fdt_list_node(fdt, root, stdout, 0);
 }
 
 static int fit_unpack(void *private_data, int fd, const char *outdir,
@@ -610,7 +1177,7 @@ static int fit_unpack(void *private_data, int fd, const char *outdir,
 
 	fdtprop_feature_incbin = 1;
 	fprintf(fp_its, "/dts-v1/;\n");
-	fdt_list_node(fit->root, fp_its, 0);
+	fdt_list_node(fit, fit->root, fp_its, 0);
 	fdtprop_feature_incbin = fdtprop_feature_incbin_back;
 
 	fclose(fp_its);

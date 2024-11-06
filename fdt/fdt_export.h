@@ -8,14 +8,24 @@
 
 #include "imgeditor.h"
 
+/* osc24M: clk@01c20050 {
+ * };
+ *
+ * The first id(osc24M) is @label and the next is @name.
+ * label is existed only when '-@|--symbols' is enabled when compile dts.
+ */
 struct device_node {
 	char				name[64];
+	char				label[64];
 	struct list_head		head;
 	struct list_head		child;
+	int				is_node;
 	size_t				data_size;
 	uint8_t				data[0];
 };
 
+struct device_node *
+	device_node_search_phandle(struct device_node *root, uint32_t phandle);
 struct device_node *
 	device_node_find_byname(struct device_node *root, const char *name);
 struct device_node *
@@ -53,6 +63,10 @@ struct fdt_editor_private_data {
 	uint32_t			totalsize;
 
 	struct device_node		*root;
+
+	int				keep_symbols;
+	int				keep_aliases;
+	int				keep_phandle;
 };
 
 int fdt_editor_detect(struct fdt_editor_private_data *p, int force_type, int fd);
