@@ -31,12 +31,15 @@ struct device_node *
 struct device_node *
 	device_node_find_bypath(struct device_node *root, const char *path);
 int device_node_read_u32(struct device_node *node, uint32_t *ret_data);
+int device_node_read_u32_prop(struct device_node *node, const char *propname,
+			      uint32_t *ret_data);
 int device_node_delete(struct device_node *root);
 int device_node_delete_bypath(struct device_node *root, const char *path);
 
 typedef __be32				fdt32_t;
 typedef __be64				fdt64_t;
 #define fdt32_to_cpu(x)			be32_to_cpu(x)
+#define cpu_to_fdt32(x)			cpu_to_be32(x)
 #define fdt64_to_cpu(x)			be64_to_cpu(x)
 
 struct fdt_header {
@@ -67,6 +70,11 @@ struct fdt_editor_private_data {
 	int				keep_symbols;
 	int				keep_aliases;
 	int				keep_phandle;
+	int				keep_fixups;
+
+	int				is_dtbo;
+	/* All extern node referenced by '__fixups__' */
+	struct device_node		*dtbo_extern;
 };
 
 int fdt_editor_detect(struct fdt_editor_private_data *p, int force_type, int fd);

@@ -1,0 +1,137 @@
+/dts-v1/;
+/plugin/;
+
+/* Bit 0 express polarity */
+#define GPIO_ACTIVE_HIGH 0
+#define GPIO_ACTIVE_LOW 1
+
+/* Bit 4 express pull up */
+#define GPIO_PULL_UP 16
+
+/* Bit 5 express pull down */
+#define GPIO_PULL_DOWN 32
+
+#define  PA	0
+#define  PB	1
+#define  PC	2
+#define  PD	3
+#define  PE	4
+#define  PF	5
+#define  PG	6
+#define  PH	7
+#define  PI	8
+#define  PJ	9
+#define  PK	10
+
+/* r pio */
+#define  PL	0
+#define  PM	1
+#define  PN	2
+
+/ {
+	gpio_watchdog: gpio_watchdog {
+		compatible = "linux,wdt-gpio";
+		gpios = <&pio PD 18 GPIO_ACTIVE_HIGH>;
+		always-running;
+		hw_algo = "toggle";
+		hw_margin_ms = <200>;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		run-led {
+			label = "run";
+			gpios = <&pio PD 3 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "heartbeat";
+			default-state = "on";
+		};
+
+		err-led {
+			label = "err";
+			gpios = <&pio PD 2 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "none";
+			default-state = "off";
+		};
+	};
+
+	gpio_keys_polled: gpio_keys_polled {
+		compatible = "gpio-keys-polled";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		poll-interval = <30>;
+		status = "okay";
+
+		button@0 {
+			label = "esc";
+			linux,code = <1>;
+			gpios = <&pio PD 4 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		};
+		button@1 {
+			label = "left";
+			linux,code = <105>;
+			gpios = <&pio PD 5 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		};
+	};
+};
+
+&pio {
+	uart3_pins_a: uart3_pins@0 {
+		pins = "PH4", "PH5";
+		function = "uart3";
+		bias-pull-up;
+	};
+
+	uart3_pins_b: uart3_pins@1 {
+		pins = "PH4", "PH5";
+		function = "io_disabled";
+	};
+
+	spi2_pins_default: spi2@0 {
+		pins = "PK1", "PK2", "PK3"; /* clk, mosi, miso */
+		function = "spi2";
+		drive-strength = <10>;
+	};
+
+	spi2_pins_cs: spi2@1 {
+		pins = "PK0"; /* cs, hold, wp */
+		function = "spi2";
+		drive-strength = <10>;
+		bias-pull-up;
+	};
+
+	spi2_pins_sleep: spi2@2 {
+		pins = "PK1", "PK2", "PK3", "PK0";
+		function = "io_disabled";
+	};
+};
+
+&uart3 {
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&uart3_pins_a>;
+	pinctrl-1 = <&uart3_pins_b>;
+	status = "okay";
+};
+
+&spi2 {
+	pinctrl-0 = <&spi2_pins_default &spi2_pins_cs>;
+	pinctrl-1 = <&spi2_pins_sleep>;
+	pinctrl-names = "default", "sleep";
+	status = "okay";
+
+	cs-gpios = <0>, <&pio PG 2 GPIO_ACTIVE_LOW>;
+
+	ac@1 {
+		compatible = "rohm,dh2228fv";
+		spi-max-frequency = <1000000>;
+		reg = <1>;
+		spi-cpha;
+	};
+};
+
+&spi3 {
+	cs-gpios = <&pio PG 3 GPIO_ACTIVE_LOW>,
+		   <&pio PG 4 GPIO_ACTIVE_LOW>;
+
+	status = "okay";
+};

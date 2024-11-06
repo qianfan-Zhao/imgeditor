@@ -123,6 +123,8 @@ if (ENABLE_FDT OR ENABLE_ALL)
         list(APPEND src fdt/fdt.c)
 
         list(APPEND tests fdt/fit/test.sh fdt/fdt/test.sh)
+        list(APPEND tests fdt/dtbo/test.sh)
+
         require_program(mkimage)
 endif()
 

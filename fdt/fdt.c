@@ -13,7 +13,37 @@
 #include "fdt_export.h"
 
 #define FDT_SYMBOLS_NAME		"__symbols__"
+#define FDT_SYMBOLS_FIXUP		"__fixups__"
+#define FDT_SYMBOLS_LOCAL_FIXUPS	"__local_fixups__"
+#define FDT_SYMBOLS_OVERLAY		"__overlay__"
 #define FDT_ALIASES_NAME		"aliases"
+
+#define FDT_DTBO_EXTERN_PHANDLE_MAGIC	0xdeadb
+#define FDT_DTBO_EXTERN_PHANDLE_START	(FDT_DTBO_EXTERN_PHANDLE_MAGIC << 12)
+
+static inline int phandle_is_dtbo_extern(uint32_t phandle)
+{
+	return (phandle >> 12) == FDT_DTBO_EXTERN_PHANDLE_MAGIC;
+}
+
+static const char *next_string(const char *buf, size_t bufsz, const char *s)
+{
+	if (s == NULL)
+		return buf;
+
+	for (; s - buf < (int)bufsz; s++) {
+		if (*s == '\0') {
+			s++;
+			if (s - buf < (int)bufsz)
+				return s;
+		}
+	}
+
+	return NULL;
+}
+
+#define foreach_string(i, buf, bufsz) \
+	for (i = NULL; (i = next_string(buf, bufsz, i)) != NULL; )
 
 /*
  * U-boot mkimage is based on fdt, it maybe containes some images which
@@ -329,7 +359,37 @@ static int _fdt_prop_print_phandles(struct fdt_editor_private_data *fdt,
 			sz -= 4;
 			p++;
 
+			/* cs-gpios = <0>, <&pio 6 2 1>; */
+			if (phandle == 0) {
+				if (!check_only)
+					fprintf(fp, "<0");
+				goto next;
+			}
+
 			target = device_node_search_phandle(fdt->root, phandle);
+			if (!target && fdt->is_dtbo && fdt->dtbo_extern) {
+				fdt32_t *pp = p;
+
+				target = device_node_search_phandle(
+						fdt->dtbo_extern, phandle);
+
+				/* we can not detect cell_size in dtbo mode
+				 * since the device tree is not completed.
+				 * we check the phandle magic instead.
+				 */
+				if (!target || cell_size != 0)
+					goto check_target;
+
+				for (size_t i = 0;
+				     !phandle_is_dtbo_extern(fdt32_to_cpu(*pp))
+				     && i < sz;
+				     i += 4) {
+					cell_size++;
+					pp++;
+				}
+			}
+
+		check_target:
 			if (!target) {
 				fprintf(stderr, "Warnning: %s %d is not found\n",
 					type_name, phandle);
@@ -340,7 +400,7 @@ static int _fdt_prop_print_phandles(struct fdt_editor_private_data *fdt,
 			if (target->label[0] == '\0')
 				return -1;
 
-			if (cell_name) {
+			if (!fdt->is_dtbo && cell_name) {
 				/* the default cell size is 0 */
 				ret = device_node_read_cells(target, cell_name,
 							     &cell_size);
@@ -368,6 +428,7 @@ static int _fdt_prop_print_phandles(struct fdt_editor_private_data *fdt,
 				p++;
 			}
 
+		next:
 			if (!check_only) {
 				fprintf(fp, ">");
 
@@ -659,6 +720,17 @@ int device_node_read_u32(struct device_node *node, uint32_t *ret_data)
 	return 0;
 }
 
+int device_node_read_u32_prop(struct device_node *node, const char *propname,
+			      uint32_t *ret_data)
+{
+	struct device_node *prop = device_node_find_byname(node, propname);
+
+	if (!prop || prop->is_node)
+		return -1;
+
+	return device_node_read_u32(prop, ret_data);
+}
+
 /* delete and free all the child */
 int device_node_delete(struct device_node *root)
 {
@@ -716,6 +788,115 @@ static int fdt_load_symbols(struct fdt_editor_private_data *fdt)
 		}
 
 		snprintf(target->label, sizeof(target->label), "%s", sym->name);
+	}
+
+	return 0;
+}
+
+static int fdt_apply_fixups(struct fdt_editor_private_data *fdt,
+			    fdt32_t fixup_phandle,
+			    const char *fixup_data,
+			    size_t fixup_data_size)
+{
+	const char *s;
+
+	/* pio = "/gpio_watchdog:gpios:0", "/leds/run-led:gpios:0"; */
+	foreach_string(s, fixup_data, fixup_data_size) {
+		struct device_node *target, *target_prop;
+		char *endp, tmpbuf[256], *argv[8] = { NULL };
+		long data_index;
+		int argc;
+
+		snprintf(tmpbuf, sizeof(tmpbuf), "%s", s);
+		argc = argv_buffer_split_with_delim(tmpbuf, ":", argv, 8);
+		if (argc != 3) {
+			fprintf(stderr, "Warnning: apply fixup %s "
+				"failed\n", s);
+			continue;
+		}
+
+		target = device_node_find_bypath(fdt->root, argv[0]);
+		if (!target || !target->is_node) {
+			fprintf(stderr, "Warnning: apply fixup %s "
+				"failed(target device not found)\n",
+				s);
+			continue;
+		}
+
+		target_prop = device_node_find_byname(target, argv[1]);
+		if (!target_prop) {
+			fprintf(stderr, "Warnning: apply fixup %s "
+				"failed(target property not found)\n",
+				s);
+			continue;;
+		}
+
+		data_index = strtol(argv[2], &endp, 10);
+		if (*endp != 0) {
+			fprintf(stderr, "Warnning: apply fixup %s "
+				"failed(data index not a number)\n",
+				s);
+			continue;
+		}
+
+		if (data_index < 0 || (data_index % 4) != 0
+			|| (size_t)data_index + sizeof(fixup_phandle)
+				> target_prop->data_size) {
+			fprintf(stderr, "Warnning: apply fixup %s "
+				"failed(bad data index)\n",
+				s);
+			continue;
+		}
+
+		memcpy(&target_prop->data[data_index], &fixup_phandle,
+			sizeof(fixup_phandle));
+	}
+
+	return 0;
+}
+
+static int fdt_prepare_dtbo_externs(struct fdt_editor_private_data *fdt)
+{
+	struct device_node *fixups =
+		device_node_find_byname(fdt->root, FDT_SYMBOLS_FIXUP);
+	uint32_t phandle = FDT_DTBO_EXTERN_PHANDLE_START;
+	struct device_node *fixup_prop;
+
+	if (!fixups || !fixups->is_node) /* not a dtbo */
+		return 0;
+
+	/* the root device node in extern dtb */
+	fdt->dtbo_extern = new_device_node("/", 0, NULL);
+	if (!fdt->dtbo_extern)
+		return -1;
+
+	fdt->is_dtbo = 1;
+
+	/* __fixups__ {
+         *   pio = "/gpio_watchdog:gpios:0", "/leds/run-led:gpios:0";
+	 *   uart3 = "/fragment@1:target:0";
+	 * };
+	 */
+	list_for_each_entry(fixup_prop, &fixups->child, head, struct device_node) {
+		struct device_node *ext
+			= new_device_node(fixup_prop->name, 0, fdt->dtbo_extern);
+		struct device_node *prop_phandle;
+		uint32_t fdt_phandle = cpu_to_fdt32(phandle);
+
+		if (!ext)
+			break;
+
+		snprintf(ext->label, sizeof(ext->label), "%s", fixup_prop->name);
+
+		prop_phandle = new_device_node("phandle", sizeof(fdt_phandle), ext);
+		if (!prop_phandle)
+			break;
+
+		memcpy(prop_phandle->data, &fdt_phandle, sizeof(fdt_phandle));
+		phandle++;
+
+		fdt_apply_fixups(fdt, fdt_phandle,
+				(const char *)fixup_prop->data, fixup_prop->data_size);
 	}
 
 	return 0;
@@ -890,6 +1071,9 @@ static void fdt_exit(void *private_data)
 
 	if (p->root)
 		device_node_delete(p->root);
+
+	if (p->dtbo_extern)
+		device_node_delete(p->dtbo_extern);
 }
 
 void fdt_editor_exit(struct fdt_editor_private_data *p)
@@ -982,25 +1166,50 @@ static int fdt_list_alias_nodes(struct fdt_editor_private_data *fdt,
 	return 0;
 }
 
+static void fdt_print_node_begin(struct device_node *node, FILE *fp, int depth)
+{
+	fprintf(fp, "\n");
+	fprintf(fp, "%*s", depth * 4, "");
+	if (node->label[0] != '\0')
+		fprintf(fp, "%s: ", node->label);
+	fprintf(fp, "%s {\n", node->name);
+}
+
+static void fdt_print_reference_node_begin(struct device_node *node, FILE *fp,
+					   int depth)
+{
+	fprintf(fp, "\n");
+	fprintf(fp, "%*s&%s {\n", depth * 4, "", node->label);
+}
+
+static void fdt_print_node_end(FILE *fp, int depth)
+{
+	fprintf(fp, "%*s};\n", depth * 4, "");
+}
+
 static int fdt_list_node(struct fdt_editor_private_data *fdt,
 			 struct device_node *root,
 			 FILE *fp, int depth)
 {
+	static const char *fixup_nodes[] = {
+		FDT_SYMBOLS_FIXUP,
+		FDT_SYMBOLS_LOCAL_FIXUPS,
+		NULL,
+	};
 	struct device_node *dev;
 	int ret = 0;
 
-	if (!strcmp(root->name, FDT_SYMBOLS_NAME) && !fdt->keep_symbols)
+	if (!fdt->keep_fixups && string_arrays_index(fixup_nodes, root->name) >= 0)
+		return 0;
+	else if (fdt->is_dtbo && !strncmp(root->name, "fragment@", 9))
+		return 0;
+	else if (!strcmp(root->name, FDT_SYMBOLS_NAME) && !fdt->keep_symbols)
 		return 0;
 
 	if (!root->is_node && list_empty(&root->child))
 		return fdt_list_node_prop(fdt, root, fp, depth);
 
-	fprintf(fp, "\n");
-	fprintf(fp, "%*s", depth * 4, "");
-	if (root->label[0] != '\0')
-		fprintf(fp, "%s: ", root->label);
-	fprintf(fp, "%s {\n", root->name);
-
+	fdt_print_node_begin(root, fp, depth);
 	if (!strcmp(root->name, FDT_ALIASES_NAME) && !fdt->keep_symbols) {
 		struct device_node *symbols =
 			device_node_find_byname(fdt->root, FDT_SYMBOLS_NAME);
@@ -1019,8 +1228,71 @@ static int fdt_list_node(struct fdt_editor_private_data *fdt,
 	}
 
 skip_childs:
-	fprintf(fp, "%*s};\n", depth * 4, "");
+	fdt_print_node_end(fp, depth);
 	return ret;
+}
+
+static int fdt_list_fragment_node(struct fdt_editor_private_data *fdt,
+				  struct device_node *fragment,
+				  FILE *fp)
+{
+	struct device_node *node, *target, *overlay;
+	uint32_t phandle;
+	int ret;
+
+	/* fragment@2 {
+	 *   target = <0xdeadb002>;
+	 *
+	 *   __overlay__ {
+	 *     pinctrl-0 = <&spi2_pins_default>, <&spi2_pins_cs>;
+	 *
+	 */
+	ret = device_node_read_u32_prop(fragment, "target", &phandle);
+	if (ret < 0) {
+		fprintf(stderr, "Warnning: get target of %s failed\n",
+			fragment->name);
+		return ret;
+	}
+
+	target = device_node_search_phandle(fdt->dtbo_extern, phandle);
+	if (!target) {
+		fprintf(stderr, "Warnning: target node of %s not found\n",
+			fragment->name);
+		return -1;
+	}
+
+	overlay = device_node_find_byname(fragment, FDT_SYMBOLS_OVERLAY);
+	if (!overlay || !overlay->is_node) {
+		fprintf(stderr, "Warnning: overlay in %s not found\n",
+			fragment->name);
+		return -1;
+	}
+
+	fdt_print_reference_node_begin(target, fp, 0);
+	list_for_each_entry(node, &overlay->child, head, struct device_node) {
+		ret = fdt_list_node(fdt, node, fp, 1);
+		if (ret < 0)
+			break;
+	}
+	fdt_print_node_end(fp, 0);
+
+	return ret;
+}
+
+static int fdt_list_fragments(struct fdt_editor_private_data *fdt, FILE *fp)
+{
+	struct device_node *node;
+
+	list_for_each_entry(node, &fdt->root->child, head, struct device_node) {
+		if (node->is_node && !strncmp(node->name, "fragment@", 9)) {
+			int ret = fdt_list_fragment_node(fdt, node, fp);
+
+			if (ret < 0)
+				return ret;
+		}
+	}
+
+	return 0;
 }
 
 static int fdt_show_memreserve(struct fdt_editor_private_data *fdt)
@@ -1052,14 +1324,19 @@ static int fdt_summary(void *private_data, int fd, char *buf, size_t bufsz)
 static int fdt_list(void *private_data, int fd, int argc, char **argv)
 {
 	struct fdt_editor_private_data *fdt = private_data;
+	int verbose = get_verbose_level();
 	struct device_node *root;
 	const char *path = "/";
+	int ret;
 
-	if (get_verbose_level() > 0) {
+	if (verbose > 0) {
 		structure_print("%-20s", fdt->dtb, structure_fdt_header);
 		fdt->keep_symbols = 1;
 		fdt->keep_aliases = 1;
 		fdt->keep_phandle = 1;
+		fdt->keep_fixups = 1;
+	} else {
+		fdt_prepare_dtbo_externs(fdt);
 	}
 
 	/* imgeditor xxx -- "/images/kernel" */
@@ -1067,6 +1344,10 @@ static int fdt_list(void *private_data, int fd, int argc, char **argv)
 		path = argv[0];
 	} else {
 		printf("/dts-v1/;\n");
+
+		if (fdt->is_dtbo)
+			printf("/plugin/;\n");
+
 		fdt_show_memreserve(fdt);
 	}
 
@@ -1076,7 +1357,17 @@ static int fdt_list(void *private_data, int fd, int argc, char **argv)
 		return -1;
 	}
 
-	return fdt_list_node(fdt, root, stdout, 0);
+	ret = fdt_list_node(fdt, root, stdout, 0);
+	if (ret < 0)
+		return ret;
+
+	if (fdt->is_dtbo) {
+		ret = fdt_list_fragments(fdt, stdout);
+		if (ret < 0)
+			return ret;
+	}
+
+	return ret;
 }
 
 static int fit_unpack(void *private_data, int fd, const char *outdir,
