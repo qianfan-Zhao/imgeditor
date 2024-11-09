@@ -45,6 +45,28 @@ typedef union {
 	uint64_t	u64;
 } unsigned_t;
 
+static uint64_t get_unsigned(int le, const unsigned_t *un, size_t sz)
+{
+	uint64_t n = 0;
+
+	switch (sz) {
+	case sizeof(uint8_t):
+		n = un->u8;
+		break;
+	case sizeof(uint16_t):
+		n = le ? le16_to_cpu(un->u16) : be16_to_cpu(un->u16);
+		break;
+	case sizeof(uint32_t):
+		n = le ? le32_to_cpu(un->u32) : be32_to_cpu(un->u32);
+		break;
+	case sizeof(uint64_t):
+		n = le ? le64_to_cpu(un->u64) : be64_to_cpu(un->u64);
+		break;
+	}
+
+	return n;
+}
+
 static void snprintf_unsigned(char *s, size_t bufsz, int le, const unsigned_t *un,
 			      size_t sz)
 {
@@ -168,6 +190,103 @@ void structure_item_print_be_xunsigned(const char *print_name_fmt,
 				       const void *addr, size_t sz)
 {
 	_structure_item_print_xunsigned(print_name_fmt, name, 0, addr, sz);
+}
+
+static void print_bit_descriptors(uint64_t flags,
+				  const struct structure_bit_descriptor *d)
+{
+	unsigned index = 0;
+
+	for (; d->descriptor; d++) {
+		if (flags & d->value) {
+			if (index != 0)
+				printf(" ");
+			printf("%s", d->descriptor);
+			++index;
+		}
+	}
+}
+
+static void _structure_item_print_bit_flags(const char *print_name_fmt,
+					    const char *name,
+					    const void *addr, size_t sz,
+					    int le,
+					    const struct structure_bit_descriptor *d)
+{
+	uint64_t flags = get_unsigned(le, addr, sz);
+	char s[64];
+
+	le = structure_endian_prefer_le(le);
+
+	structure_print_name(print_name_fmt, name);
+	snprintf_xunsigned(s, sizeof(s), le, addr, sz);
+	printf("%s (", s);
+	print_bit_descriptors(flags, d);
+	printf(")\n");
+}
+
+void structure_item_print_bit_flags(const char *print_name_fmt,
+				    const char *name,
+				    const void *addr, size_t sz,
+				    const struct structure_bit_descriptor *d)
+{
+	_structure_item_print_bit_flags(print_name_fmt, name, addr, sz, 1, d);
+}
+
+void structure_item_print_be_bit_flags(const char *print_name_fmt,
+				       const char *name,
+				       const void *addr, size_t sz,
+				       const struct structure_bit_descriptor *d)
+{
+	_structure_item_print_bit_flags(print_name_fmt, name, addr, sz, 0, d);
+}
+
+void _structure_item_print_enum(const char *print_name_fmt, const char *name,
+				const void *addr, size_t sz, int le,
+				unsigned rshift, unsigned long mask,
+				const struct structure_bit_descriptor *d)
+{
+	uint64_t n = get_unsigned(le, addr, sz);
+	char s[64];
+
+	n >>= rshift;
+	if (mask)
+		n &= mask;
+
+	le = structure_endian_prefer_le(le);
+
+	structure_print_name(print_name_fmt, name);
+	snprintf_unsigned(s, sizeof(s), le, addr, sz);
+	printf("%s (", s);
+
+	for (; d->descriptor; d++) {
+		if (n == d->value) {
+			printf("%s", d->descriptor);
+			break;
+		}
+	}
+	if (!d->descriptor) /* not found */
+		printf("%s", "???");
+
+	printf(")\n");
+}
+
+void structure_item_print_enum(const char *print_name_fmt, const char *name,
+			       const void *addr, size_t sz,
+			       unsigned rshift, unsigned long mask,
+			       const struct structure_bit_descriptor *d)
+{
+	_structure_item_print_enum(print_name_fmt, name, addr, sz, 1,
+				   rshift, mask, d);
+}
+
+void structure_item_print_be_enum(const char *print_name_fmt, const char *name,
+				  const void *addr, size_t sz,
+				  unsigned rshift, unsigned long mask,
+				  const struct structure_bit_descriptor *d)
+{
+	_structure_item_print_enum(print_name_fmt, name, addr, sz, 0,
+				   rshift, mask, d);
 }
 
 static int _structure_item_save_json_xunsigned(cJSON *json, const char *name,

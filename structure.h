@@ -116,4 +116,30 @@ int structure_item_load_json_u32_be_array(cJSON *json, const char *name,
 int structure_load_json(cJSON *json, void *base,
 			const struct structure_item *items);
 
+/* bit flags helper functions */
+struct structure_bit_descriptor {
+	unsigned long		value;
+	const char		*descriptor;
+};
+
+void structure_item_print_bit_flags(const char *print_name_fmt,
+				    const char *name,
+				    const void *addr, size_t sz,
+				    const struct structure_bit_descriptor *d);
+
+void structure_item_print_be_bit_flags(const char *print_name_fmt,
+				       const char *name,
+				       const void *addr, size_t sz,
+				       const struct structure_bit_descriptor *d);
+
+void structure_item_print_enum(const char *print_name_fmt, const char *name,
+			       const void *addr, size_t sz,
+			       unsigned rshift, unsigned long mask,
+			       const struct structure_bit_descriptor *d);
+
+void structure_item_print_be_enum(const char *print_name_fmt, const char *name,
+				  const void *addr, size_t sz,
+				  unsigned rshift, unsigned long mask,
+				  const struct structure_bit_descriptor *d);
+
 #endif
