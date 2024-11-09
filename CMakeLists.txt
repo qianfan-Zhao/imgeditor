@@ -129,19 +129,22 @@ if (ENABLE_FDT OR ENABLE_ALL)
 endif()
 
 if (ENABLE_FS OR ENABLE_ALL)
-        list(APPEND src fs/ext2.c fs/ubi.c)
+        list(APPEND src fs/ext2.c fs/ubi.c fs/squashfs.c)
 
         list(APPEND tests
                 fs/ext4/test.sh
                 fs/ext2/test.sh
                 fs/ubi/test.sh
                 fs/ubi_none/test.sh
+                fs/squashfs_nocomp/test.sh
         )
 
         require_program(mkfs.ext2)
         require_program(mkfs.ext4)
         require_program(mkfs.ubifs)
         require_program(ubinize)
+        require_program(mksquashfs)
+        require_program(unsquashfs)
 endif()
 
 if (ENABLE_UBOOT OR ENABLE_ALL)

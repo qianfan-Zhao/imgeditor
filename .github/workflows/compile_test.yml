@@ -26,7 +26,7 @@ jobs:
       # mtd-utils: mkfs.ubifs ubinize
       run: |
         sudo apt update
-        sudo apt install mtd-utils u-boot-tools dos2unix img2simg device-tree-compiler
+        sudo apt install mtd-utils u-boot-tools dos2unix img2simg device-tree-compiler squashfs-tools
 
     - name: gcc version
       run: |
