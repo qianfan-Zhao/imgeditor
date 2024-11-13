@@ -139,6 +139,7 @@ if (ENABLE_FS OR ENABLE_ALL)
                 fs/ubi/test.sh
                 fs/ubi_none/test.sh
                 fs/squashfs_nocomp/test.sh
+                fs/f2fs/test.sh
         )
 
         require_program(mkfs.ext2)
@@ -147,6 +148,8 @@ if (ENABLE_FS OR ENABLE_ALL)
         require_program(ubinize)
         require_program(mksquashfs)
         require_program(unsquashfs)
+        require_program(mkfs.f2fs)
+        require_program(sload.f2fs)
 endif()
 
 if (ENABLE_UBOOT OR ENABLE_ALL)
