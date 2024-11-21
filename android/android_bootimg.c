@@ -128,17 +128,18 @@ struct abootimg_editor_private_data {
 
 static void abootimg_update_sha1sum(uint8_t *buf, size_t sz_buster, void *p)
 {
-	SHA1_CTX_t *ctx = p;
+	hash_context_t *ctx = p;
 
-	sha1_update(ctx, buf, sz_buster);
+	hash_context_update(ctx, buf, sz_buster);
 }
 
 static int abootimg_detect(void *private_data, int force_type, int fd)
 {
 	struct abootimg_editor_private_data *p = private_data;
-	uint8_t sha1sum[SHA1_DIGEST_SIZE];
+	hash_context_t hash;
+	uint8_t sha1sum[128];
+	size_t hashsz;
 	uint32_t offset;
-	SHA1_CTX_t *ctx;
 	int ret;
 
 	ret = read(fd, &p->head, sizeof(p->head));
@@ -181,22 +182,21 @@ static int abootimg_detect(void *private_data, int force_type, int fd)
 		p->head.dtb_size,
 	};
 
-	ctx = sha1_new();
+	hash_context_init(&hash, HASH_TYPE_SHA1);
 	offset = p->head.page_size;
 	for (size_t i = 0; i < n_abootimg_files; i++) {
 		uint32_t sz = abootimg_file_sizes[i];
 
 		if (sz > 0)
-			dd(fd, -1, offset, 0, sz, abootimg_update_sha1sum, ctx);
+			dd(fd, -1, offset, 0, sz, abootimg_update_sha1sum, &hash);
 
 		/* update sha1sum string even if the filesize is zero */
-		abootimg_update_sha1sum((uint8_t *)&sz, sizeof(sz), ctx);
+		abootimg_update_sha1sum((uint8_t *)&sz, sizeof(sz), &hash);
 		offset += aligned_length(sz, p->head.page_size);
 	}
-	sha1_finish(ctx, sha1sum);
-	sha1_free(ctx);
 
-	if (memcmp(sha1sum, p->head.id, sizeof(sha1sum))) {
+	hashsz = hash_context_finish(&hash, sha1sum, sizeof(sha1sum));
+	if (memcmp(sha1sum, p->head.id, hashsz)) {
 		fprintf_if_force_type("Error: sha1sum doesn't match\n");
 		return -1;
 	}
@@ -394,8 +394,11 @@ static int abootimg_do_pack(struct andr_img_hdr *hdr, cJSON *json_files,
 {
 	const struct abootimg_file *afile = &abootimg_files[0];
 	size_t padsz = 0, offset = le32_to_cpu(hdr->page_size);
-	uint8_t sha1sum[SHA1_DIGEST_SIZE];
-	SHA1_CTX_t *ctx = sha1_new();
+	hash_context_t hash;
+	uint8_t sha1sum[128];
+	size_t hashsz;
+
+	hash_context_init(&hash, HASH_TYPE_SHA1);
 
 	for (; afile->name; afile++) {
 		__le32 *p_hdr_size = (void *)hdr + afile->hdr_size_offset;
@@ -409,7 +412,7 @@ static int abootimg_do_pack(struct andr_img_hdr *hdr, cJSON *json_files,
 		if (json_string_array_search(json_files, afile->name) < 0) {
 			*p_hdr_size = cpu_to_le32(0);
 			abootimg_update_sha1sum((uint8_t *)p_hdr_size,
-						sizeof(*p_hdr_size), ctx);
+						sizeof(*p_hdr_size), &hash);
 			continue;
 		}
 
@@ -423,9 +426,9 @@ static int abootimg_do_pack(struct andr_img_hdr *hdr, cJSON *json_files,
 			return length;
 
 		*p_hdr_size = cpu_to_le32(length);
-		dd(fd, fd_outimg, 0, offset, length, abootimg_update_sha1sum, ctx);
+		dd(fd, fd_outimg, 0, offset, length, abootimg_update_sha1sum, &hash);
 		abootimg_update_sha1sum((uint8_t *)p_hdr_size,
-					sizeof(*p_hdr_size), ctx);
+					sizeof(*p_hdr_size), &hash);
 
 		size_t tmp = offset + length;
 		offset += aligned_length(length, le32_to_cpu(hdr->page_size));
@@ -442,9 +445,8 @@ static int abootimg_do_pack(struct andr_img_hdr *hdr, cJSON *json_files,
 		write(fd_outimg, &zero, sizeof(zero));
 	}
 
-	sha1_finish(ctx, sha1sum);
-	sha1_free(ctx);
-	memcpy(hdr->id, sha1sum, sizeof(sha1sum));
+	hashsz = hash_context_finish(&hash, sha1sum, sizeof(sha1sum));
+	memcpy(hdr->id, sha1sum, hashsz);
 	memcpy(hdr->magic, ANDR_BOOT_MAGIC, sizeof(hdr->magic));
 
 	lseek(fd_outimg, 0, SEEK_SET);

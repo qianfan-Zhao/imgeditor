@@ -3,13 +3,9 @@ project(imgeditor C)
 
 set(CMAKE_INSTALL_PREFIX "/usr/local" CACHE PATH "Install path prefix")
 
-# for md5, sha1, sha256, sha512
-find_package(OpenSSL REQUIRED)
-include_directories(${OPENSSL_INCLUDE_DIR})
-
 include_directories(.)
 include_directories(libs/cJSON)
-include_directories(libs/GmSSL/include)
+include_directories(libs/hash)
 include_directories(libs/minilzo)
 include_directories(libs/libxopt)
 
@@ -165,7 +161,6 @@ set(libimgeditor_src
         xstring.c
         keymap.c
         hexdump_printf.c
-        hash_compatible.c
         virtual_file.c
         disk_partition.c
         exini.c
@@ -174,6 +169,11 @@ set(libimgeditor_src
         libs/cJSON/cJSON.c
         libs/minilzo/minilzo.c
         libs/libxopt/libxopt.c
+        libs/hash/rfc1321/md5c.c
+        libs/hash/rfc6234/sha1.c
+        libs/hash/rfc6234/sha224-256.c
+        libs/hash/rfc6234/sha384-512.c
+        libs/hash/hash_compatible.c
 )
 
 # generate libimgeditor.a and libimgeditor.so
@@ -186,12 +186,10 @@ add_executable(imgeditor_elf ${src})
 target_link_libraries(imgeditor_elf imgeditor_static)
 target_link_libraries(imgeditor_elf -ldl)
 target_link_libraries(imgeditor_elf -lrt) # for shm
-target_link_libraries(imgeditor_elf OpenSSL::Crypto OpenSSL::SSL)
 set_target_properties(imgeditor_elf PROPERTIES OUTPUT_NAME imgeditor)
 
 set(IMGEDITOR_HEADERS
         "imgeditor.h"
-        "hash_compatible.h"
         "json_helper.h"
         "string_helper.h"
         "structure.h"
@@ -199,10 +197,10 @@ set(IMGEDITOR_HEADERS
         "exini.h"
         "libs/cJSON/cJSON.h"
         "libs/libxopt/libxopt.h"
+        "libs/hash/hash_compatible.h"
 )
 
 add_executable(imgeditor_api_test ${src_api_test})
-target_link_libraries(imgeditor_api_test OpenSSL::Crypto OpenSSL::SSL)
 target_link_libraries(imgeditor_api_test imgeditor_static)
 target_link_libraries(imgeditor_api_test -lrt)
 
