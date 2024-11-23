@@ -7,6 +7,7 @@ size_t test_total = 0, test_failed = 0;
 int main(int argc, char **argv)
 {
 	xopt_test();
+	crc_test();
 	hash_compatible_test();
 
 	printf("total %zu, failed %zu\n", test_total, test_failed);
