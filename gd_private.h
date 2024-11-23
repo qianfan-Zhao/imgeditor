@@ -33,6 +33,8 @@ struct global_data {
 	struct imgeditor		*export_imgeditors[GD_MAX_IMGEDITOR];
 
 	struct virtual_file		vfps[MAX_VIRTUAL_FILE];
+
+	int				search_mode;
 };
 
 struct global_data *imgeditor_get_gd(void);

@@ -19,6 +19,7 @@
 #include "ext_common.h"
 #include "ext4_journal.h"
 #include "structure.h"
+#include "libcrc.h"
 
 struct ext2_editor_private_data;
 static void *alloc_inode_file(struct ext2_editor_private_data *p, uint32_t ino,
@@ -36,6 +37,84 @@ static void structure_item_print_ext2_unix_epoch(const char *print_name_fmt, con
 	localtime_r(&t, &tm);
 	strftime(buf, sizeof(buf), "%FT%T", &tm);
 	printf("%s (%ld)\n", buf, t);
+}
+
+static void st_print_sb_feature_compat(const char *print_name_fmt,
+				       const char *name,
+				       const void *data, size_t sz)
+{
+	#define EXT_SB_FLAG_BIT(name) { EXT4_FEATURE_COMPAT_##name, #name }
+	static const struct structure_bit_descriptor flags[] = {
+		EXT_SB_FLAG_BIT(DIR_PREALLOC),
+		EXT_SB_FLAG_BIT(IMAGIC_INODES),
+		EXT_SB_FLAG_BIT(EXT_ATTR),
+		EXT_SB_FLAG_BIT(RESIZE_INODE),
+		EXT_SB_FLAG_BIT(DIR_INDEX),
+		EXT_SB_FLAG_BIT(SPARSE_SUPER2),
+		EXT_SB_FLAG_BIT(FAST_COMMIT),
+		EXT_SB_FLAG_BIT(STABLE_INODES),
+		EXT_SB_FLAG_BIT(ORPHAN_FILE),
+		{ 0, NULL },
+	};
+	#undef EXT_SB_FLAG_BIT
+
+	structure_item_print_bit_flags(print_name_fmt, name, data, sz, flags);
+}
+
+static void st_print_sb_feature_incompat(const char *print_name_fmt,
+					 const char *name,
+					 const void *data, size_t sz)
+{
+	#define EXT_SB_FLAG_BIT(name) { EXT4_FEATURE_INCOMPAT_##name, #name }
+	static const struct structure_bit_descriptor flags[] = {
+		EXT_SB_FLAG_BIT(COMPRESSION),
+		EXT_SB_FLAG_BIT(FILETYPE),
+		EXT_SB_FLAG_BIT(RECOVER),
+		EXT_SB_FLAG_BIT(JOURNAL_DEV),
+		EXT_SB_FLAG_BIT(META_BG),
+		EXT_SB_FLAG_BIT(EXTENTS),
+		EXT_SB_FLAG_BIT(64BIT),
+		EXT_SB_FLAG_BIT(MMP),
+		EXT_SB_FLAG_BIT(FLEX_BG),
+		EXT_SB_FLAG_BIT(EA_INODE),
+		EXT_SB_FLAG_BIT(DIRDATA),
+		EXT_SB_FLAG_BIT(CSUM_SEED),
+		EXT_SB_FLAG_BIT(LARGEDIR),
+		EXT_SB_FLAG_BIT(INLINE_DATA),
+		EXT_SB_FLAG_BIT(ENCRYPT),
+		EXT_SB_FLAG_BIT(CASEFOLD),
+		{ 0, NULL },
+	};
+	#undef EXT_SB_FLAG_BIT
+
+	structure_item_print_bit_flags(print_name_fmt, name, data, sz, flags);
+}
+
+static void st_print_sb_feature_rocompat(const char *print_name_fmt,
+					 const char *name,
+					 const void *data, size_t sz)
+{
+	#define EXT_SB_FLAG_BIT(name) { EXT4_FEATURE_RO_COMPAT_##name, #name }
+	static const struct structure_bit_descriptor flags[] = {
+		EXT_SB_FLAG_BIT(SPARSE_SUPER),
+		EXT_SB_FLAG_BIT(LARGE_FILE),
+		EXT_SB_FLAG_BIT(BTREE_DIR),
+		EXT_SB_FLAG_BIT(HUGE_FILE),
+		EXT_SB_FLAG_BIT(GDT_CSUM),
+		EXT_SB_FLAG_BIT(DIR_NLINK),
+		EXT_SB_FLAG_BIT(EXTRA_ISIZE),
+		EXT_SB_FLAG_BIT(QUOTA),
+		EXT_SB_FLAG_BIT(BIGALLOC),
+		EXT_SB_FLAG_BIT(METADATA_CSUM),
+		EXT_SB_FLAG_BIT(READONLY),
+		EXT_SB_FLAG_BIT(PROJECT),
+		EXT_SB_FLAG_BIT(VERITY),
+		EXT_SB_FLAG_BIT(ORPHAN_PRESENT),
+		{ 0, NULL },
+	};
+	#undef EXT_SB_FLAG_BIT
+
+	structure_item_print_bit_flags(print_name_fmt, name, data, sz, flags);
 }
 
 static const struct structure_item ext2_sblock_structure[] = {
@@ -58,7 +137,7 @@ static const struct structure_item ext2_sblock_structure[] = {
 	STRUCTURE_ITEM(struct ext2_sblock, fs_state,			structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_sblock, error_handling,		structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_sblock, minor_revision_level,	structure_item_print_unsigned),
-	STRUCTURE_ITEM(struct ext2_sblock, lastcheck,			structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct ext2_sblock, lastcheck,			structure_item_print_ext2_unix_epoch),
 	STRUCTURE_ITEM(struct ext2_sblock, checkinterval,		structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_sblock, creator_os,			structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_sblock, revision_level,		structure_item_print_unsigned),
@@ -67,9 +146,9 @@ static const struct structure_item ext2_sblock_structure[] = {
 	STRUCTURE_ITEM(struct ext2_sblock, first_inode,			structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_sblock, inode_size,			structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_sblock, block_group_number,		structure_item_print_unsigned),
-	STRUCTURE_ITEM(struct ext2_sblock, feature_compatibility,	structure_item_print_unsigned),
-	STRUCTURE_ITEM(struct ext2_sblock, feature_incompat,		structure_item_print_unsigned),
-	STRUCTURE_ITEM(struct ext2_sblock, feature_ro_compat,		structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct ext2_sblock, feature_compatibility,	st_print_sb_feature_compat),
+	STRUCTURE_ITEM(struct ext2_sblock, feature_incompat,		st_print_sb_feature_incompat),
+	STRUCTURE_ITEM(struct ext2_sblock, feature_ro_compat,		st_print_sb_feature_rocompat),
 	STRUCTURE_ITEM(struct ext2_sblock, unique_id,			structure_item_print_x32_array),
 	STRUCTURE_ITEM(struct ext2_sblock, volume_name,			structure_item_print_string),
 	STRUCTURE_ITEM(struct ext2_sblock, last_mounted_on,		structure_item_print_string),
@@ -100,13 +179,15 @@ static const struct structure_item ext2_sblock_structure[] = {
 	STRUCTURE_ITEM(struct ext2_sblock, raid_stripe_width,		structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_sblock, log2_groups_per_flex,	structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_sblock, checksum_type,		structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct ext2_sblock, checksum_seed,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct ext2_sblock, checksum,			structure_item_print_xunsigned),
 	STRUCTURE_ITEM_END(),
 };
 
 static const struct structure_item ext2_block_group_structure_32[] = {
-	STRUCTURE_ITEM(struct ext2_block_group, block_id,		structure_item_print_unsigned),
-	STRUCTURE_ITEM(struct ext2_block_group, inode_id,		structure_item_print_unsigned),
-	STRUCTURE_ITEM(struct ext2_block_group, inode_table_id,		structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct ext2_block_group, block_id,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct ext2_block_group, inode_id,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct ext2_block_group, inode_table_id,		structure_item_print_xunsigned),
 	STRUCTURE_ITEM(struct ext2_block_group, free_blocks,		structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_block_group, free_inodes,		structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_block_group, used_dir_cnt,		structure_item_print_unsigned),
@@ -120,11 +201,11 @@ static const struct structure_item ext2_block_group_structure_32[] = {
 };
 
 static const struct structure_item ext2_block_group_structure_64[] = {
-	STRUCTURE_ITEM(struct ext2_block_group, block_id_high,		structure_item_print_unsigned),
-	STRUCTURE_ITEM(struct ext2_block_group, inode_id_high,		structure_item_print_unsigned),
-	STRUCTURE_ITEM(struct ext2_block_group, inode_table_id_high,	structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct ext2_block_group, block_id_high,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct ext2_block_group, inode_id_high,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct ext2_block_group, inode_table_id_high,	structure_item_print_xunsigned),
 	STRUCTURE_ITEM(struct ext2_block_group, free_blocks_high,	structure_item_print_xunsigned),
-	STRUCTURE_ITEM(struct ext2_block_group, free_inodes_high,	structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct ext2_block_group, free_inodes_high,	structure_item_print_xunsigned),
 	STRUCTURE_ITEM(struct ext2_block_group, used_dir_cnt_high,	structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_block_group, bg_itable_unused_high,	structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct ext2_block_group, bg_exclude_bitmap_high,	structure_item_print_xunsigned),
@@ -476,12 +557,96 @@ struct ext2_editor_private_data {
 	uint32_t			fragment_size; /* in bytes */
 	uint32_t			inode_size; /* in bytes */
 	uint32_t			n_block_group;
+
+	uint32_t			csum_seed;
+	struct libcrc32			crc32c_le;
+	struct libcrc16			crc16;
 };
 
-static int ext2_check_sblock(int force_type, struct ext2_sblock *sblock)
+static int ext2_editor_init(void *private_data)
 {
-	if (sblock->magic != EXT2_MAGIC) {
+	struct ext2_editor_private_data *p = private_data;
+	struct libcrc32 *crc32 = &p->crc32c_le;
+	struct libcrc16 *crc16 = &p->crc16;
+
+	memset(crc32, 0, sizeof(*crc32));
+	crc32->poly = 0x1edc6f41;
+	crc32->seed = 0xffffffff;
+	crc32->refin = true;
+	crc32->refout = true;
+
+	memset(crc16, 0, sizeof(*crc16));
+	crc16->poly = 0x8005;
+	crc16->seed = 0xffff;
+	crc16->refin = true;
+	crc16->refout = true;
+
+	return 0;
+}
+
+static void ext2_editor_exit(void *private_data)
+{
+	struct ext2_editor_private_data *p = private_data;
+
+	if (p->block_groups) {
+		free(p->block_groups);
+		p->block_groups = NULL;
+	}
+}
+
+static int ext2_has_ro_compat_feature(struct ext2_sblock *sb, unsigned int flags)
+{
+	return le32_to_cpu(sb->feature_ro_compat) & flags;
+}
+
+static int ext2_has_sblock_csum(struct ext2_sblock *sblock)
+{
+	return ext2_has_ro_compat_feature(sblock,
+			EXT4_FEATURE_RO_COMPAT_METADATA_CSUM);
+}
+
+static int ext2_has_block_group_csum(struct ext2_sblock *sblock)
+{
+	return ext2_has_ro_compat_feature(sblock,
+			EXT4_FEATURE_RO_COMPAT_METADATA_CSUM |
+			EXT4_FEATURE_RO_COMPAT_GDT_CSUM);
+}
+
+static int ext2_check_sblock(struct libcrc32 *crc, int force_type,
+			     struct ext2_sblock *sblock)
+{
+	uint32_t sum;
+
+	if (le16_to_cpu(sblock->magic) != EXT2_MAGIC) {
 		fprintf_if_force_type("Error: magic doesn't match\n");
+		return -1;
+	}
+
+#define check_sblock_not(type, value) do {				\
+	if (le32_to_cpu(sblock->type) == (value)) {			\
+		fprintf_if_force_type("Error: sblock.%s == %d\n",	\
+					#type, value);			\
+		return -1;						\
+	}								\
+} while (0)
+
+	check_sblock_not(total_inodes, 0);
+	check_sblock_not(total_blocks, 0);
+	check_sblock_not(blocks_per_group, 0);
+	check_sblock_not(fragments_per_group, 0);
+	check_sblock_not(inodes_per_group, 0);
+
+	if (ext2_has_sblock_csum(sblock) == 0)
+		return 0;
+
+	libcrc32_init_seed(crc, 0xffffffff);
+	libcrc32_update(crc, sblock, offsetof(struct ext2_sblock, checksum));
+	sum = libcrc32_finish(crc);
+	if (sum != le32_to_cpu(sblock->checksum)) {
+		fprintf_if_force_type("Error: bad checksum in super block "
+				      "%x != %x\n",
+				      sum,
+				      le32_to_cpu(sblock->checksum));
 		return -1;
 	}
 
@@ -527,7 +692,7 @@ static int _ext2_read_inode(struct ext2_editor_private_data *p, int ino,
 	if (ret < 0)
 		return ret;
 
-	lseek(p->fd, blkno * p->block_size + blk_offset, SEEK_SET);
+	fileseek(p->fd, blkno * p->block_size + blk_offset);
 	ret = read(p->fd, inode, sizeof(*inode));
 	if (ret != (int)sizeof(*inode)) {
 		fprintf(stderr, "Error: read inode #%d failed(%d)\n",
@@ -559,7 +724,7 @@ static int ext2_read_blocks(struct ext2_editor_private_data *p,
 	if (sz > bufsz)
 		sz = bufsz;
 
-	lseek(p->fd, blkno * p->block_size, SEEK_SET);
+	fileseek(p->fd, blkno * p->block_size);
 	n = read(p->fd, buf, sz);
 	if (n <= 0 || (size_t)n != sz) {
 		fprintf(stderr, "Error: read %d blocks from #%lu failed\n",
@@ -1137,6 +1302,22 @@ static int print_dirent(struct ext2_editor_private_data *p, uint32_t ino,
 	return ret;
 }
 
+static void ext2_init_csum_seed(struct ext2_editor_private_data *p)
+{
+	struct ext2_sblock *sblock = &p->sblock;
+
+	if (le32_to_cpu(sblock->feature_incompat) & EXT4_FEATURE_INCOMPAT_CSUM_SEED) {
+		p->csum_seed = le32_to_cpu(sblock->checksum_seed);
+		return;
+	}
+
+	libcrc32_init_seed(&p->crc32c_le, 0xffffffff);
+	libcrc32_update(&p->crc32c_le, sblock->unique_id, sizeof(sblock->unique_id));
+	p->csum_seed = libcrc32_finish(&p->crc32c_le);
+}
+
+static int64_t ext2_total_size(void *private_data, int fd);
+
 static int ext2_detect(void *private_data, int force_type, int fd)
 {
 	struct ext2_editor_private_data *p = private_data;
@@ -1146,14 +1327,26 @@ static int ext2_detect(void *private_data, int force_type, int fd)
 	/* save fd to private_data */
 	p->fd = fd;
 
-	lseek(fd, SUPERBLOCK_START, SEEK_SET);
-	ret = read(fd, sblock, sizeof(*sblock));
+	fileseek(fd, SUPERBLOCK_START);
+	ret = fileread(fd, sblock, sizeof(*sblock));
 	if (ret < 0)
 		return ret;
 
-	ret = ext2_check_sblock(force_type, sblock);
+	/* NOTE:
+	 *
+	 * The block group descriptor is layouting after super block.
+	 * We need check the block group descriptor's checksum to detect
+	 * this image since we have many backup supber blocks but only one
+	 * block group descriptor.
+	 */
+	if (imgeditor_in_search_mode() && ext2_has_block_group_csum(sblock) == 0)
+		return -1;
+
+	ret = ext2_check_sblock(&p->crc32c_le, force_type, sblock);
 	if (ret < 0)
 		return ret;
+
+	ext2_init_csum_seed(p);
 
 	p->block_size = ext2_sblock_log2_size_to_bytes(sblock->log2_block_size);
 	p->fragment_size = ext2_sblock_log2_size_to_bytes(sblock->log2_fragment_size);
@@ -1161,10 +1354,25 @@ static int ext2_detect(void *private_data, int force_type, int fd)
 		aligned_length((sblock->total_blocks - sblock->first_data_block),
 				sblock->blocks_per_group) / sblock->blocks_per_group;
 
+	/* The default blocks_per_group is 32K,
+	 * one group = 32K * 4K = 128M,
+	 * for a 1T partition it need 1T / 128M = 1024 * 1024 / 128 = 8192
+	 */
+	if (p->n_block_group > 8192) {
+		fprintf_if_force_type("Error: too many block groups(%d)\n",
+					p->n_block_group);
+		return -1;
+	}
+
 	if (le32_to_cpu(sblock->revision_level) == 0)
 		p->inode_size = 128;
 	else
 		p->inode_size = le16_to_cpu(sblock->inode_size);
+
+	if (filelength(fd) < ext2_total_size(private_data, fd)) {
+		fprintf_if_force_type("Error: file is incompleted\n");
+		return -1;
+	}
 
 	p->block_groups = calloc(p->n_block_group,
 				 sizeof(struct ext2_block_group));
@@ -1175,7 +1383,7 @@ static int ext2_detect(void *private_data, int force_type, int fd)
 	}
 
 	/* loading all block groups */
-	lseek(fd, p->block_size, SEEK_SET);
+	fileseek(fd, p->block_size);
 	for (uint32_t i = 0; i < p->n_block_group; i++) {
 		uint16_t descriptor_size = le16_to_cpu(sblock->descriptor_size);
 		struct ext2_block_group *group = &p->block_groups[i];
@@ -1184,15 +1392,87 @@ static int ext2_detect(void *private_data, int force_type, int fd)
 		if (descriptor_size == 0)
 			descriptor_size = 32;
 
+		if (descriptor_size > sizeof(struct ext2_block_group)) {
+			fprintf_if_force_type("Error: too large block group "
+					      "descriptor size %d\n",
+					      descriptor_size);
+			ext2_editor_exit(p);
+			return -1;
+		}
+
 		read(fd, group, descriptor_size);
+
+		if (ext2_has_block_group_csum(sblock)) {
+			uint32_t sum;
+
+			if (ext2_has_ro_compat_feature(sblock,
+				EXT4_FEATURE_RO_COMPAT_METADATA_CSUM)) {
+				uint32_t oldcrc;
+
+				oldcrc = group->bg_checksum;
+				group->bg_checksum = 0;
+
+				libcrc32_init_seed(&p->crc32c_le, p->csum_seed);
+				libcrc32_update(&p->crc32c_le, &i, sizeof(i));
+				libcrc32_update(&p->crc32c_le, group, descriptor_size);
+				sum = libcrc32_finish(&p->crc32c_le);
+
+				group->bg_checksum = oldcrc;
+			} else {
+				size_t offset = offsetof(struct ext2_block_group, bg_checksum);
+
+				libcrc16_init_seed(&p->crc16, 0xffff);
+				libcrc16_update(&p->crc16, sblock->unique_id,
+						sizeof(sblock->unique_id));
+				libcrc16_update(&p->crc16, &i, sizeof(i));
+				libcrc16_update(&p->crc16, group, offset);
+
+				offset += sizeof(group->bg_checksum);
+				if (offset < descriptor_size)
+					libcrc16_update(&p->crc16,
+							(void *)group + offset,
+							descriptor_size - offset);
+				sum = libcrc16_finish(&p->crc16);
+			}
+
+			if ((sum & 0xffff) != le32_to_cpu(group->bg_checksum)) {
+				fprintf_if_force_type("Error: bad bg_checksum on "
+					"group descriptor %d (%08x != %08x)\n",
+					i, sum, le32_to_cpu(group->bg_checksum));
+				ext2_editor_exit(p);
+				return -1;
+			}
+		}
 	}
 
 	ret = ext2_read_inode(p, EXT2_ROOT_INO, &p->root_inode);
 	if (ret < 0) {
 		fprintf_if_force_type("Error: read root inode failed\n");
+		ext2_editor_exit(p);
 		return ret;
 	}
 
+	return 0;
+}
+
+static int64_t ext2_total_size(void *private_data, int fd)
+{
+	struct ext2_editor_private_data *p = private_data;
+	int64_t sz = le32_to_cpu(p->sblock.total_blocks);
+
+	return sz * p->block_size;
+}
+
+static int ext2_summary(void *private_data, int fd, char *buf, size_t bufsz)
+{
+	struct ext2_editor_private_data *p = private_data;
+	int disk_mb = ext2_total_size(private_data, fd) >> 20;
+
+	snprintf(buf, bufsz,
+		"%dMiB on %.*s",
+		disk_mb,
+		(int)sizeof(p->sblock.last_mounted_on),
+		p->sblock.last_mounted_on);
 	return 0;
 }
 
@@ -1836,7 +2116,7 @@ static int load_file_from_dir_blocks(struct ext2_editor_private_data *p,
 		if (chunk_sz > p->block_size)
 			chunk_sz = p->block_size;
 
-		lseek64(p->fd, b.blocks[i] * p->block_size, SEEK_SET);
+		fileseek(p->fd, b.blocks[i] * p->block_size);
 		read(p->fd, buf + copied, chunk_sz);
 
 		copied += chunk_sz;
@@ -1903,9 +2183,8 @@ static void *alloc_inode_file(struct ext2_editor_private_data *p, uint32_t ino,
 		if (bytes > filesz)
 			bytes = filesz;
 
-		lseek64(p->fd,
-			ext4_extent_start_block(ee) * p->block_size,
-			SEEK_SET);
+		fileseek(p->fd,
+			ext4_extent_start_block(ee) * p->block_size);
 
 		read(p->fd,
 		     buf + le32_to_cpu(ee->ee_block) * p->block_size,
@@ -2008,6 +2287,11 @@ static int ext2_unpack(void *private_data, int fd, const char *dirout, int argc,
 	return unpack_dirent(p, EXT2_ROOT_INO, dirout);
 }
 
+static const uint8_t ext2_disk_magic[2] = {
+	(EXT2_MAGIC >> 0) & 0xff,
+	(EXT2_MAGIC >> 8) & 0xff,
+};
+
 static struct imgeditor ext2_editor = {
 	.name			= "ext2",
 	.descriptor		= "ext2 image editor",
@@ -2015,8 +2299,18 @@ static struct imgeditor ext2_editor = {
 				  IMGEDITOR_FLAG_HIDE_INFO_WHEN_LIST,
 	.header_size		= SUPERBLOCK_START + SUPERBLOCK_SIZE,
 	.private_data_size	= sizeof(struct ext2_editor_private_data),
+	.init			= ext2_editor_init,
+	.exit			= ext2_editor_exit,
 	.detect			= ext2_detect,
 	.list			= ext2_main,
 	.unpack			= ext2_unpack,
+	.total_size		= ext2_total_size,
+	.summary		= ext2_summary,
+
+	.search_magic		= {
+		.magic		= ext2_disk_magic,
+		.magic_sz	= sizeof(ext2_disk_magic),
+		.magic_offset	= offsetof(struct ext2_sblock, magic) + SUPERBLOCK_START,
+	}
 };
 REGISTER_IMGEDITOR(ext2_editor);

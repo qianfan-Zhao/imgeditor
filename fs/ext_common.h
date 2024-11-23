@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <endian.h>
+#include "imgeditor.h"
 
 #define SECTOR_SIZE			0x200
 #define LOG2_SECTOR_SIZE		9
@@ -40,6 +41,67 @@
 
 #define SUPERBLOCK_START		(2 * 512)
 #define SUPERBLOCK_SIZE			1024
+
+/*
+ * Feature set definitions
+ */
+
+#define EXT4_FEATURE_COMPAT_DIR_PREALLOC	0x0001
+#define EXT4_FEATURE_COMPAT_IMAGIC_INODES	0x0002
+#define EXT4_FEATURE_COMPAT_HAS_JOURNAL		0x0004
+#define EXT4_FEATURE_COMPAT_EXT_ATTR		0x0008
+#define EXT4_FEATURE_COMPAT_RESIZE_INODE	0x0010
+#define EXT4_FEATURE_COMPAT_DIR_INDEX		0x0020
+#define EXT4_FEATURE_COMPAT_SPARSE_SUPER2	0x0200
+/*
+ * The reason why "FAST_COMMIT" is a compat feature is that, FS becomes
+ * incompatible only if fast commit blocks are present in the FS. Since we
+ * clear the journal (and thus the fast commit blocks), we don't mark FS as
+ * incompatible. We also have a JBD2 incompat feature, which gets set when
+ * there are fast commit blocks present in the journal.
+ */
+#define EXT4_FEATURE_COMPAT_FAST_COMMIT		0x0400
+#define EXT4_FEATURE_COMPAT_STABLE_INODES	0x0800
+#define EXT4_FEATURE_COMPAT_ORPHAN_FILE		0x1000	/* Orphan file exists */
+
+#define EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
+#define EXT4_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
+#define EXT4_FEATURE_RO_COMPAT_BTREE_DIR	0x0004
+#define EXT4_FEATURE_RO_COMPAT_HUGE_FILE        0x0008
+#define EXT4_FEATURE_RO_COMPAT_GDT_CSUM		0x0010
+#define EXT4_FEATURE_RO_COMPAT_DIR_NLINK	0x0020
+#define EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE	0x0040
+#define EXT4_FEATURE_RO_COMPAT_QUOTA		0x0100
+#define EXT4_FEATURE_RO_COMPAT_BIGALLOC		0x0200
+/*
+ * METADATA_CSUM also enables group descriptor checksums (GDT_CSUM).  When
+ * METADATA_CSUM is set, group descriptor checksums use the same algorithm as
+ * all other data structures' checksums.  However, the METADATA_CSUM and
+ * GDT_CSUM bits are mutually exclusive.
+ */
+#define EXT4_FEATURE_RO_COMPAT_METADATA_CSUM	0x0400
+#define EXT4_FEATURE_RO_COMPAT_READONLY		0x1000
+#define EXT4_FEATURE_RO_COMPAT_PROJECT		0x2000
+#define EXT4_FEATURE_RO_COMPAT_VERITY		0x8000
+#define EXT4_FEATURE_RO_COMPAT_ORPHAN_PRESENT	0x10000 /* Orphan file may be
+							   non-empty */
+
+#define EXT4_FEATURE_INCOMPAT_COMPRESSION	0x0001
+#define EXT4_FEATURE_INCOMPAT_FILETYPE		0x0002
+#define EXT4_FEATURE_INCOMPAT_RECOVER		0x0004 /* Needs recovery */
+#define EXT4_FEATURE_INCOMPAT_JOURNAL_DEV	0x0008 /* Journal device */
+#define EXT4_FEATURE_INCOMPAT_META_BG		0x0010
+#define EXT4_FEATURE_INCOMPAT_EXTENTS		0x0040 /* extents support */
+#define EXT4_FEATURE_INCOMPAT_64BIT		0x0080
+#define EXT4_FEATURE_INCOMPAT_MMP               0x0100
+#define EXT4_FEATURE_INCOMPAT_FLEX_BG		0x0200
+#define EXT4_FEATURE_INCOMPAT_EA_INODE		0x0400 /* EA in inode */
+#define EXT4_FEATURE_INCOMPAT_DIRDATA		0x1000 /* data in dirent */
+#define EXT4_FEATURE_INCOMPAT_CSUM_SEED		0x2000
+#define EXT4_FEATURE_INCOMPAT_LARGEDIR		0x4000 /* >2GB or 3-lvl htree */
+#define EXT4_FEATURE_INCOMPAT_INLINE_DATA	0x8000 /* data in inode */
+#define EXT4_FEATURE_INCOMPAT_ENCRYPT		0x10000
+#define EXT4_FEATURE_INCOMPAT_CASEFOLD		0x20000
 
 /* The ext2 superblock.  */
 struct ext2_sblock {
@@ -105,6 +167,38 @@ struct ext2_sblock {
 	__le32 raid_stripe_width;
 	uint8_t log2_groups_per_flex;
 	uint8_t checksum_type;
+	__u8   encryption_level;	/* versioning level for encryption */
+	__u8   reserved_pad;		/* Padding to next 32bits */
+	__le64 kbytes_written;		/* nr of lifetime kilobytes written */
+	__le32 snapshot_inum;		/* Inode number of active snapshot */
+	__le32 snapshot_id;		/* sequential ID of active snapshot */
+	__le64 snapshot_r_blocks_count; /* reserved blocks for active
+					      snapshot's future use */
+	__le32 snapshot_list;		/* inode number of the head of the
+					   on-disk snapshot list */
+	__le32 error_count;		/* number of fs errors */
+	__le32 first_error_time;	/* first time an error happened */
+	__le32 first_error_ino;		/* inode involved in first error */
+	__le64 first_error_block;	/* block involved of first error */
+	__u8 first_error_func[32];	/* function where the error happened */
+	__le32 first_error_line;	/* line number where error happened */
+	__le32 last_error_time;		/* most recent time of an error */
+	__le32 last_error_ino;		/* inode involved in last error */
+	__le32 last_error_line;		/* line number where error happened */
+	__le64 last_error_block;	/* block involved of last error */
+	__u8 last_error_func[32];	/* function where the error happened */
+	__u8 mount_opts[64];
+	__le32 usr_quota_inum;		/* inode for tracking user quota */
+	__le32 grp_quota_inum;		/* inode for tracking group quota */
+	__le32 overhead_clusters;	/* overhead blocks/clusters in fs */
+	__le32 backup_bgs[2];		/* groups with sparse_super2 SBs */
+	__u8 encrypt_algos[4];		/* Encryption algorithms in use  */
+	__u8 encrypt_pw_salt[16];	/* Salt used for string2key algorithm */
+	__le32 lpf_ino;			/* Location of the lost+found inode */
+	__le32 prj_quota_inum;		/* inode for tracking project quota */
+	__le32 checksum_seed;		/* crc32c(uuid) if csum_seed set */
+	__le32 reserved[98];		/* Padding to the end of the block */
+	__le32 checksum;		/* crc32c(superblock) */
 };
 
 struct ext2_block_group {

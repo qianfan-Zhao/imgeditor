@@ -66,6 +66,12 @@ function imgeditor_unpack_ext4_test() {
     # unpack and compare
     assert_imgeditor_successful --unpack ${dir}.${FSTYPE} || exit $?
     assert_direq ${dir}.${FSTYPE}.dump ${dir} || exit $?
+
+    # unpack at offset
+    dd if=/dev/zero of=${dir}_1M.${FSTYPE} bs=1M cont=1
+    dd if=${dir}.${FSTYPE} of=${dir}_1M.${FSTYPE} bs=1M seek=1
+    assert_imgeditor_successful --offset 1048576 --unpack ${dir}_1M.${FSTYPE} || exit $?
+    assert_direq ${dir}_1M.${FSTYPE}.dump ${dir} || exit $?
 }
 
 function simple_abc() {

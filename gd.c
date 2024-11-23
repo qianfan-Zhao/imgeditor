@@ -115,6 +115,11 @@ int get_verbose_level(void)
 	return imgeditor_get_gd()->verbose_level;
 }
 
+int imgeditor_in_search_mode(void)
+{
+	return imgeditor_get_gd()->search_mode;
+}
+
 void gd_export_imgeditor(struct imgeditor *imgeditor)
 {
 	struct global_data *gd = imgeditor_get_gd();
