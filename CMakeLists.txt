@@ -8,12 +8,14 @@ include_directories(libs/cJSON)
 include_directories(libs/hash)
 include_directories(libs/minilzo)
 include_directories(libs/libxopt)
+include_directories(libs/crc)
 
 set(src main.c)
 
 set(src_api_test
         tests/api_test/xopt.c
         tests/api_test/hash_compatible.c
+        tests/api_test/libcrc.c
         tests/api_test/main.c
 )
 
@@ -174,6 +176,7 @@ set(libimgeditor_src
         libs/hash/rfc6234/sha224-256.c
         libs/hash/rfc6234/sha384-512.c
         libs/hash/hash_compatible.c
+        libs/crc/libcrc.c
 )
 
 # generate libimgeditor.a and libimgeditor.so
@@ -198,6 +201,7 @@ set(IMGEDITOR_HEADERS
         "libs/cJSON/cJSON.h"
         "libs/libxopt/libxopt.h"
         "libs/hash/hash_compatible.h"
+        "libs/crc/libcrc.h"
 )
 
 add_executable(imgeditor_api_test ${src_api_test})

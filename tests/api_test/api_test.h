@@ -30,6 +30,15 @@ extern size_t test_total, test_failed;
 	test_total++;								\
 } while (0)
 
+#define assert_xinteq(a, b) do {						\
+	if ((a) != (b)) {							\
+		fprintf(stderr, "assert_eq failed in %s:%d (%08x != %08x)\n",	\
+			__func__, __LINE__, a, b);				\
+		test_failed++;							\
+	}									\
+	test_total++;								\
+} while (0)
+
 #define assert_good(ex) do {							\
 	if (!(ex)) {								\
 		fprintf(stderr, "assert(%s) failed in %s:%d\n", 		\
@@ -40,6 +49,7 @@ extern size_t test_total, test_failed;
 } while (0)
 
 void xopt_test();
+void crc_test();
 void hash_compatible_test();
 
 #endif
