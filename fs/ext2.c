@@ -25,6 +25,11 @@ struct ext2_editor_private_data;
 static void *alloc_inode_file(struct ext2_editor_private_data *p, uint32_t ino,
 			      uint64_t *ret_filesize);
 
+static size_t aligned_block(size_t size, size_t block_size)
+{
+	return aligned_length(size, block_size) / block_size;
+}
+
 static void structure_item_print_ext2_unix_epoch(const char *print_name_fmt, const char *name,
 						 const void *addr, size_t sz)
 {
@@ -546,6 +551,24 @@ static void structure_print_ext2_inode(const char *print_name_fmt, struct ext2_i
 	structure_print(print_name_fmt, inode, ext2_inode_structure_part3);
 }
 
+enum disk_layout_type {
+	DISK_LAYOUT_SUPBER_BLOCK,
+	DISK_LAYOUT_GROUP_DESCRIPTOR,
+	DISK_LAYOUT_RESERVED_GDT,
+	DISK_LAYOUT_DATA_BLOCK_BITMAP,
+	DISK_LAYOUT_INODE_BITMAP,
+	DISK_LAYOUT_INODE_TABLE,
+
+	DISK_LAYOUT_MAX,
+};
+
+struct disk_layout {
+	enum disk_layout_type		major_type;
+	uint16_t			group;
+	uint32_t			start_block;
+	uint32_t			len_block;
+};
+
 struct ext2_editor_private_data {
 	int				fd;
 
@@ -561,7 +584,92 @@ struct ext2_editor_private_data {
 	uint32_t			csum_seed;
 	struct libcrc32			crc32c_le;
 	struct libcrc16			crc16;
+
+	/* 1T partition has 8192 groups, one group need at no more than 6 item:
+	 * data bitmap, inode bitmap, inode table,
+	 * backup super block, backup gdt, reserved gdt
+	 */
+#define EXT2_MAX_DISK_LAYOUT_ARRAYS	(8192 * 6)
+	struct disk_layout		layouts[EXT2_MAX_DISK_LAYOUT_ARRAYS];
+	size_t				n_layout;
 };
+
+static int ext2_editor_register_layout(struct ext2_editor_private_data *p,
+				       enum disk_layout_type major,
+				       uint16_t group,
+				       uint32_t start_block,
+				       uint32_t len_block)
+{
+	if (p->n_layout < EXT2_MAX_DISK_LAYOUT_ARRAYS) {
+		struct disk_layout *layout = &p->layouts[p->n_layout];
+
+		++p->n_layout;
+		layout->major_type = major;
+		layout->group = group;
+		layout->start_block = start_block;
+		layout->len_block = len_block;
+
+		return 0;
+	}
+
+	return -1;
+}
+
+static const struct disk_layout *
+	ext2_editor_disk_layout_match_block(struct ext2_editor_private_data *p,
+					    uint32_t blkno)
+{
+	for (size_t i = 0; i < p->n_layout; i++) {
+		struct disk_layout *layout = &p->layouts[i];
+
+		if (blkno >= layout->start_block &&
+			blkno < layout->start_block + layout->len_block)
+			return layout;
+	}
+
+	return NULL;
+}
+
+static char *format_disk_layout(const struct disk_layout *layout,
+				char *buf, size_t bufsz)
+{
+	static const char *string_types[DISK_LAYOUT_MAX] = {
+		[DISK_LAYOUT_SUPBER_BLOCK]	= "super block",
+		[DISK_LAYOUT_GROUP_DESCRIPTOR]	= "group descriptor",
+		[DISK_LAYOUT_RESERVED_GDT]	= "group descriptor(rev)",
+		[DISK_LAYOUT_DATA_BLOCK_BITMAP] = "data bitmap",
+		[DISK_LAYOUT_INODE_BITMAP]	= "inode bitmap",
+		[DISK_LAYOUT_INODE_TABLE]	= "inode table",
+	};
+
+	if (!layout)
+		return NULL;
+
+	switch (layout->major_type) {
+	case DISK_LAYOUT_DATA_BLOCK_BITMAP:
+	case DISK_LAYOUT_INODE_BITMAP:
+	case DISK_LAYOUT_INODE_TABLE:
+	case DISK_LAYOUT_RESERVED_GDT:
+		snprintf(buf, bufsz, "%-22s for group %d",
+			 string_types[layout->major_type],
+			 layout->group);
+		break;
+	case DISK_LAYOUT_SUPBER_BLOCK:
+	case DISK_LAYOUT_GROUP_DESCRIPTOR:
+		if (layout->group != 0)
+			snprintf(buf, bufsz, "%-22s  in group %d (backup)",
+				string_types[layout->major_type],
+				layout->group);
+		else
+			snprintf(buf, bufsz, "%s",
+				 string_types[layout->major_type]);
+		break;
+	default:
+		return NULL;
+	}
+
+	return buf;
+}
 
 static int ext2_editor_init(void *private_data)
 {
@@ -1316,12 +1424,118 @@ static void ext2_init_csum_seed(struct ext2_editor_private_data *p)
 	p->csum_seed = libcrc32_finish(&p->crc32c_le);
 }
 
+static int qsort_compare_layout(const void *a, const void *b)
+{
+	const struct disk_layout *la = a, *lb = b;
+
+	return la->start_block - lb->start_block;
+}
+
+static bool is_power_of(int a, int b)
+{
+	while (a > b) {
+		if (a % b)
+			return 0;
+		a /= b;
+	}
+
+	return (a == b);
+}
+
+static bool ext2_block_group_has_backup_sb(struct ext2_sblock *sb, size_t group)
+{
+	if (ext2_has_ro_compat_feature(sb, EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER)) {
+		uint8_t power_bases[] = {7, 5, 3};
+
+		/* the sequence of powers of 3, 5, and 7:
+		 * 1, 3, 5, 7, 9, 25, 27, 49, 81, ...
+		 */
+		if (group == 1)
+			return true;
+
+		for (size_t i = 0; i < sizeof(power_bases); i++) {
+			if (is_power_of(group, power_bases[i]))
+				return true;
+		}
+
+		return false;
+	}
+
+	return true;
+}
+
+static int ext2_editor_init_layouts(struct ext2_editor_private_data *p)
+{
+	struct ext2_sblock *sblock = &p->sblock;
+	uint16_t descriptor_size;
+
+	descriptor_size = le16_to_cpu(sblock->descriptor_size);
+	/* sblock->descriptor_size maybe zero on some ext2 filesystem */
+	if (descriptor_size == 0)
+		descriptor_size = 32;
+
+	/* inode tables */
+	for (size_t group = 0; group < p->n_block_group; group++) {
+		struct ext2_block_group *bgrp = &p->block_groups[group];
+		uint32_t block_start, block_len;
+
+		block_start = group * le32_to_cpu(sblock->blocks_per_group);
+
+		/* super block */
+		if (group == 0 || ext2_block_group_has_backup_sb(sblock, group)) {
+			ext2_editor_register_layout(p, DISK_LAYOUT_SUPBER_BLOCK,
+						    group,
+						    block_start, 1);
+
+			/* block descriptor */
+			block_start += 1;
+			block_len = aligned_block(p->n_block_group * descriptor_size,
+						p->block_size);
+			ext2_editor_register_layout(p, DISK_LAYOUT_GROUP_DESCRIPTOR,
+						group, block_start, block_len);
+			block_start += block_len;
+
+			/* Reserved GDT */
+			block_len = le16_to_cpu(sblock->reserved_gdt_blocks);
+			if (block_len > 0) {
+				ext2_editor_register_layout(p, DISK_LAYOUT_RESERVED_GDT,
+							group, block_start, block_len);
+				block_start += block_len;
+			}
+		}
+
+		ext2_editor_register_layout(p, DISK_LAYOUT_INODE_BITMAP, group,
+					    le32_to_cpu(bgrp->inode_id),
+					    1);
+
+		ext2_editor_register_layout(p, DISK_LAYOUT_DATA_BLOCK_BITMAP,
+					    group,
+					    le32_to_cpu(bgrp->block_id),
+					    1);
+
+		block_len = aligned_block(
+			p->inode_size * le32_to_cpu(sblock->inodes_per_group),
+			p->block_size);
+
+		ext2_editor_register_layout(p, DISK_LAYOUT_INODE_TABLE, group,
+					    le32_to_cpu(bgrp->inode_table_id),
+					    block_len);
+	}
+
+	/* sort it */
+	qsort(p->layouts, p->n_layout, sizeof(p->layouts[0]),
+		qsort_compare_layout);
+
+	return 0;
+}
+
 static int64_t ext2_total_size(void *private_data, int fd);
 
 static int ext2_detect(void *private_data, int force_type, int fd)
 {
 	struct ext2_editor_private_data *p = private_data;
 	struct ext2_sblock *sblock = &p->sblock;
+	uint16_t descriptor_size;
 	int ret;
 
 	/* save fd to private_data */
@@ -1364,6 +1578,18 @@ static int ext2_detect(void *private_data, int force_type, int fd)
 		return -1;
 	}
 
+	descriptor_size = le16_to_cpu(sblock->descriptor_size);
+	/* sblock->descriptor_size maybe zero on some ext2 filesystem */
+	if (descriptor_size == 0)
+		descriptor_size = 32;
+
+	if (descriptor_size > sizeof(struct ext2_block_group)) {
+		fprintf_if_force_type("Error: too large block group "
+					"descriptor size %d\n",
+					descriptor_size);
+		return -1;
+	}
+
 	if (le32_to_cpu(sblock->revision_level) == 0)
 		p->inode_size = 128;
 	else
@@ -1385,20 +1611,7 @@ static int ext2_detect(void *private_data, int force_type, int fd)
 	/* loading all block groups */
 	fileseek(fd, p->block_size);
 	for (uint32_t i = 0; i < p->n_block_group; i++) {
-		uint16_t descriptor_size = le16_to_cpu(sblock->descriptor_size);
 		struct ext2_block_group *group = &p->block_groups[i];
-
-		/* sblock->descriptor_size maybe zero on some ext2 filesystem */
-		if (descriptor_size == 0)
-			descriptor_size = 32;
-
-		if (descriptor_size > sizeof(struct ext2_block_group)) {
-			fprintf_if_force_type("Error: too large block group "
-					      "descriptor size %d\n",
-					      descriptor_size);
-			ext2_editor_exit(p);
-			return -1;
-		}
 
 		read(fd, group, descriptor_size);
 
@@ -1452,6 +1665,7 @@ static int ext2_detect(void *private_data, int force_type, int fd)
 		return ret;
 	}
 
+	ext2_editor_init_layouts(p);
 	return 0;
 }
 
@@ -1779,17 +1993,29 @@ static int ext2_journal_print_desc(struct journal_foreach_arg *arg,
 				   uint64_t fs_blocknr, uint64_t journal_blocknr,
 				   uint32_t flags)
 {
+
+	char *disk_layout_info = NULL, s[256];
+
 	if (get_verbose_level() == 0) {
+		const struct disk_layout *layout;
 		uint32_t seq = be32_to_cpu(arg->sb->s_sequence);
 		uint32_t thisseq = be32_to_cpu(this->h_sequence);
 
 		if (thisseq < seq)
 			return 0;
+
+		layout = ext2_editor_disk_layout_match_block(arg->ext,
+							     fs_blocknr);
+		disk_layout_info = format_disk_layout(layout, s, sizeof(s));
 	}
 
 	printf("%27sFS blocknr %-8" PRIu64
 		"logged at journal block %-5" PRIu64 " with flags 0x%x",
 		"", fs_blocknr, journal_blocknr, flags);
+
+	if (disk_layout_info)
+		printf(" (%s)", disk_layout_info);
+
 	printf("\n");
 
 	return 0;
@@ -1911,10 +2137,11 @@ static int ext2_foreach_journal(struct journal_foreach_arg *arg)
 	return 0;
 }
 
-static int ext2_do_journal_list(void *journal_buf, size_t journal_size)
+static int ext2_do_journal_list(struct ext2_editor_private_data *ext2,
+				void *journal_buf, size_t journal_size)
 {
 	struct journal_foreach_arg arg = {
-		.ext			= NULL, /* print doesn't need this */
+		.ext			= ext2,
 		.journal_buf		= journal_buf,
 		.journal_size		= journal_size,
 		.class_handler		= ext2_journal_print_class,
@@ -1969,7 +2196,7 @@ static int ext2_do_journal(void *private_data, int fd, int argc, char **argv)
 		return -1;
 
 	if (argc <= 1)
-		ret = ext2_do_journal_list(journal_buf, journal_size);
+		ret = ext2_do_journal_list(p, journal_buf, journal_size);
 	else if (!strcmp(argv[1], "sblock"))
 		ret = ext2_do_journal_superblock(journal_buf, journal_size);
 	else if (!strcmp(argv[1], "block"))
@@ -2008,6 +2235,33 @@ static int ext2_do_orphan(void *private_data, int fd, int argc, char **argv)
 	return 0;
 }
 
+static int ext2_do_layout(void *private_data, int fd, int argc, char **argv)
+{
+	struct ext2_editor_private_data *p = private_data;
+
+	printf("%8s %8s %8s\n", "start", "end", "blocks");
+	for (size_t i = 0; i < p->n_layout; i++) {
+		struct disk_layout *layout = &p->layouts[i];
+		char s[256];
+
+		if (layout->major_type < 0
+			|| layout->major_type >= DISK_LAYOUT_MAX)
+			return -1;
+
+		printf("%8d %8d %8d ",
+			layout->start_block,
+			layout->start_block + layout->len_block - 1,
+			layout->len_block);
+
+		format_disk_layout(layout, s, sizeof(s));
+		printf("%s", s);
+
+		printf("\n");
+	}
+
+	return 0;
+}
+
 static int ext2_main(void *private_data, int fd, int argc, char **argv)
 {
 	if (argc >= 1) {
@@ -2027,6 +2281,8 @@ static int ext2_main(void *private_data, int fd, int argc, char **argv)
 			return ext2_do_journal(private_data, fd, argc, argv);
 		else if (!strcmp(argv[0], "orphan"))
 			return ext2_do_orphan(private_data, fd, argc, argv);
+		else if (!strcmp(argv[0], "layout"))
+			return ext2_do_layout(private_data, fd, argc, argv);
 	}
 
 	return ext2_do_list(private_data, fd, argc, argv);
