@@ -1687,21 +1687,131 @@ static size_t journal_descriptor_blocktag_size(uint32_t incompat_features)
 	return sz;
 }
 
-static int ext2_journal_list_descriptor(struct journal_superblock_t *sb,
-					uint32_t journal_blkno,
-					uint32_t *ret_data_blks,
-					void *blockbuf, size_t blocksize)
+struct journal_foreach_arg {
+	struct ext2_editor_private_data		*ext;
+	void					*journal_buf;
+	size_t					journal_size;
+
+	struct journal_superblock_t		*sb;
+	int					break_next;
+
+	int (*class_handler)(struct journal_foreach_arg *arg,
+			     struct journal_header_t *this, void *data,
+			     uint32_t journal_blkno);
+
+	int (*desc_handler)(struct journal_foreach_arg *arg,
+			    struct journal_header_t *this,
+			    uint64_t fs_blocknr, uint64_t journal_blocknr,
+			    uint32_t flags);
+};
+
+static int ext2_journal_print_class(struct journal_foreach_arg *arg,
+				    struct journal_header_t *h,
+				    void *data,
+				    uint32_t journal_blkno)
 {
-	uint32_t incompat_features = be32_to_cpu(sb->s_feature_incompat);
+	struct commit_header *commit = data;
+	struct journal_revoke_header_t *revoke = data;
+
+	if (get_verbose_level() == 0) {
+		uint32_t seq = be32_to_cpu(arg->sb->s_sequence);
+		uint32_t thisseq = be32_to_cpu(h->h_sequence);
+
+		if (thisseq < seq)
+			return 0;
+	}
+
+	switch (be32_to_cpu(h->h_blocktype)) {
+	case EXT3_JOURNAL_DESCRIPTOR_BLOCK:
+	case EXT3_JOURNAL_COMMIT_BLOCK:
+	case EXT3_JOURNAL_SUPERBLOCK_V1:
+	case EXT3_JOURNAL_SUPERBLOCK_V2:
+	case EXT3_JOURNAL_REVOKE_BLOCK:
+		printf("Journal %4d on blk #%-5d ",
+			be32_to_cpu(h->h_sequence), journal_blkno);
+		break;
+	default:
+		return -1;
+	}
+
+	switch (be32_to_cpu(h->h_blocktype)) {
+	case EXT3_JOURNAL_SUPERBLOCK_V1:
+	case EXT3_JOURNAL_SUPERBLOCK_V2:
+		printf("%-13s sequence=%d", "Superblock",
+			be32_to_cpu(arg->sb->s_sequence));
+		break;
+	case EXT3_JOURNAL_DESCRIPTOR_BLOCK:
+		printf("%-13s ", "Descriptor");
+		break;
+	case EXT3_JOURNAL_COMMIT_BLOCK:
+		{
+			char buf[64];
+			struct tm tm = { 0 };
+			time_t t = be64_to_cpu(commit->h_commit_sec);
+
+			printf("%-13s", "Commit");
+
+			localtime_r(&t, &tm);
+			strftime(buf, sizeof(buf), "%FT%T", &tm);
+			printf(" %s.%03d",
+				buf,
+				be32_to_cpu(commit->h_commit_nsec) / 1000000);
+		}
+		break;
+	case EXT3_JOURNAL_REVOKE_BLOCK:
+		printf("%-13s", "Revocation");
+		printf(" count=%d", be32_to_cpu(revoke->r_count) / 4);
+		for (unsigned int i = 0;
+			i < be32_to_cpu(revoke->r_count); i += 4) {
+			__be32 *p_revoke_blk = (void *)(revoke + 1) + i;
+
+			printf(" %d", be32_to_cpu(*p_revoke_blk));
+		}
+		break;
+	}
+
+	printf("\n");
+	return 0;
+}
+
+static int ext2_journal_print_desc(struct journal_foreach_arg *arg,
+				   struct journal_header_t *this,
+				   uint64_t fs_blocknr, uint64_t journal_blocknr,
+				   uint32_t flags)
+{
+	if (get_verbose_level() == 0) {
+		uint32_t seq = be32_to_cpu(arg->sb->s_sequence);
+		uint32_t thisseq = be32_to_cpu(this->h_sequence);
+
+		if (thisseq < seq)
+			return 0;
+	}
+
+	printf("%27sFS blocknr %-8" PRIu64
+		"logged at journal block %-5" PRIu64 " with flags 0x%x",
+		"", fs_blocknr, journal_blocknr, flags);
+	printf("\n");
+
+	return 0;
+}
+
+static int ext2_journal_foreach_descriptor(struct journal_foreach_arg *arg,
+					  struct journal_header_t *this,
+					  void *data,
+					  uint32_t journal_start_blkno,
+					  uint32_t *ret_data_blks)
+{
+	uint32_t incompat_features = be32_to_cpu(arg->sb->s_feature_incompat);
 	size_t tagsize = journal_descriptor_blocktag_size(incompat_features);
-	void *p = blockbuf + sizeof(struct journal_header_t);
-	uint32_t data_blks = 0;
+	size_t blocksize = be32_to_cpu(arg->sb->s_blocksize);
 	size_t tailsize = 0;
+	uint32_t data_blks = 0;
+	void *p = data;
 
 	if (incompat_features & JBD2_FEATURE_INCOMPAT_CSUM_V2_3)
 		tailsize = sizeof(struct jbd2_journal_block_tail);
 
-	while ((size_t)(p - blockbuf) <= blocksize - tagsize - tailsize) {
+	while ((size_t)(p - (void *)this) <= blocksize - tagsize - tailsize) {
 		struct journal_block_tag3_s *tag3 = p;
 		struct journal_block_tag_s *tag = p;
 		uint64_t blocknr = 0;
@@ -1722,9 +1832,11 @@ static int ext2_journal_list_descriptor(struct journal_superblock_t *sb,
 			flags = be16_to_cpu(tag->t_flags);
 		}
 
-		printf("\n%27sFS blocknr %-8" PRIu64
-		       "logged at journal block %-5d with flags 0x%x",
-			"", blocknr, journal_blkno + data_blks, flags);
+		if (arg->desc_handler) {
+			arg->desc_handler(arg, this, blocknr,
+					 journal_start_blkno + data_blks,
+					 flags);
+		}
 
 		if (flags & EXT3_JOURNAL_FLAG_LAST_TAG)
 			break;
@@ -1738,18 +1850,18 @@ static int ext2_journal_list_descriptor(struct journal_superblock_t *sb,
 	return 0;
 }
 
-static int ext2_do_journal_list(void *journal_buf, size_t journal_size)
+static int ext2_foreach_journal(struct journal_foreach_arg *arg)
 {
-	struct journal_superblock_t *sb = journal_buf + sizeof(struct journal_header_t);
-	struct journal_revoke_header_t *revoke;
-	struct commit_header *commit;
-	void *p = journal_buf;
+	void *p = arg->journal_buf;
 	uint32_t journal_blkno = 0;
 
-	while (p - journal_buf < (int)journal_size) {
+	arg->break_next = 0;
+	arg->sb = arg->journal_buf + sizeof(struct journal_header_t);
+
+	while (p - arg->journal_buf < (int)arg->journal_size) {
 		struct journal_header_t *h = p;
 		uint32_t blocktype = be32_to_cpu(h->h_blocktype);
-		uint32_t skip_size = be32_to_cpu(sb->s_blocksize);
+		uint32_t skip_size = be32_to_cpu(arg->sb->s_blocksize);
 
 		if (be32_to_cpu(h->h_magic) != EXT3_JOURNAL_MAGIC_NUMBER)
 			goto next;
@@ -1760,21 +1872,18 @@ static int ext2_do_journal_list(void *journal_buf, size_t journal_size)
 		case EXT3_JOURNAL_SUPERBLOCK_V1:
 		case EXT3_JOURNAL_SUPERBLOCK_V2:
 		case EXT3_JOURNAL_REVOKE_BLOCK:
-			printf("Journal %4d on blk #%-5d ",
-				be32_to_cpu(h->h_sequence), journal_blkno);
+			if (arg->class_handler) {
+				arg->class_handler(arg, h, h + 1, journal_blkno);
+				if (arg->break_next)
+					return 0;
+			}
 			break;
 		default:
 			goto next;
 		}
 
 		switch (blocktype) {
-		case EXT3_JOURNAL_SUPERBLOCK_V1:
-		case EXT3_JOURNAL_SUPERBLOCK_V2:
-			printf("%-13s sequence=%d", "Superblock",
-				be32_to_cpu(sb->s_sequence));
-			break;
 		case EXT3_JOURNAL_DESCRIPTOR_BLOCK:
-			printf("%-13s ", "Descriptor");
 			{
 				uint32_t n_data_blk = 0;
 
@@ -1783,51 +1892,36 @@ static int ext2_do_journal_list(void *journal_buf, size_t journal_size)
 				 * verbatim into the journal file after the
 				 * descriptor block.
 				 */
-				ext2_journal_list_descriptor(sb, journal_blkno,
-					&n_data_blk,
-					p, be32_to_cpu(sb->s_blocksize));
+				ext2_journal_foreach_descriptor(arg, h, h + 1,
+								journal_blkno,
+								&n_data_blk);
 
 				journal_blkno += n_data_blk;
 				skip_size +=
-					(n_data_blk * be32_to_cpu(sb->s_blocksize));
-			}
-			break;
-		case EXT3_JOURNAL_COMMIT_BLOCK:
-			commit = p + sizeof(*h);
-			printf("%-13s", "Commit");
-
-			{
-				char buf[64];
-				struct tm tm = { 0 };
-				time_t t = be64_to_cpu(commit->h_commit_sec);
-
-				localtime_r(&t, &tm);
-				strftime(buf, sizeof(buf), "%FT%T", &tm);
-				printf(" %s.%03d",
-					buf,
-					be32_to_cpu(commit->h_commit_nsec) / 1000000);
-			}
-			break;
-		case EXT3_JOURNAL_REVOKE_BLOCK:
-			revoke = p + sizeof(*h);
-			printf("%-13s", "Revocation");
-			printf(" count=%d", be32_to_cpu(revoke->r_count) / 4);
-			for (unsigned int i = 0;
-			    i < be32_to_cpu(revoke->r_count); i += 4) {
-				__be32 *p_revoke_blk = (void *)(revoke + 1) + i;
-
-				printf(" %d", be32_to_cpu(*p_revoke_blk));
+					(n_data_blk * be32_to_cpu(arg->sb->s_blocksize));
 			}
 			break;
 		}
 
-		printf("\n");
 	next:
 		p += skip_size;
 		journal_blkno++;
 	}
 
 	return 0;
+}
+
+static int ext2_do_journal_list(void *journal_buf, size_t journal_size)
+{
+	struct journal_foreach_arg arg = {
+		.ext			= NULL, /* print doesn't need this */
+		.journal_buf		= journal_buf,
+		.journal_size		= journal_size,
+		.class_handler		= ext2_journal_print_class,
+		.desc_handler		= ext2_journal_print_desc,
+	};
+
+	return ext2_foreach_journal(&arg);
 }
 
 static int ext2_do_journal_superblock(void *journal_buf, size_t journal_size)
