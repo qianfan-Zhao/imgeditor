@@ -20,6 +20,7 @@ int virtual_file_dup(int ref_fd, off64_t offset);
 int virtual_file_close(int fd);
 
 int get_verbose_level(void);
+int imgeditor_in_search_mode(void);
 
 #define SIZE_KB(x)				((x) << 10)
 #define SIZE_MB(x)				((x) << 20)

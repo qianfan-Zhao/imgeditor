@@ -824,6 +824,7 @@ int main(int argc, char *argv[])
 		offset = offset_sector * sector_size;
 
 	if (search_mode) {
+		gd->search_mode = 1;
 		ret = imgeditor_search(out_file, offset);
 		goto done;
 	}
