@@ -3,12 +3,11 @@
  * qianfan Zhao
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include "imgeditor.h"
-
-typedef uint16_t __le16;
-typedef uint32_t __le32;
+#include "android_sparse.h"
 
 struct sparse_header {
   __le32	magic;		/* 0xed26ff3a */
@@ -37,6 +36,227 @@ struct chunk_header {
   __le32	chunk_sz;	/* in blocks in output image */
   __le32	total_sz;	/* in bytes of chunk input file including chunk header and data */
 };
+
+static int android_sparse_chunk_sort(const void *a, const void *b)
+{
+	const struct android_sparse_chunk *chunka = a, *chunkb = b;
+
+	return chunka->fs_blocknr - chunkb->fs_blocknr;
+}
+
+int android_sparse_init(struct android_sparse_input *input)
+{
+	input->total_chunk_size = 64;
+	input->active_count = 0;
+	input->error = 0;
+
+	input->chunks = calloc(input->total_chunk_size,
+				sizeof(input->chunks[0]));
+	if (!input->chunks)
+		return -1;
+
+	return 0;
+}
+
+static int android_sparse_enlarge(struct android_sparse_input *input)
+{
+	struct android_sparse_chunk *new_chunks;
+	size_t cur_bytes, total_bytes;
+
+	if (input->active_count + 1 < input->total_chunk_size)
+		return 0;
+
+	cur_bytes = input->total_chunk_size * sizeof(input->chunks[0]);
+	total_bytes = cur_bytes * 2;
+
+	new_chunks = realloc(input->chunks, total_bytes);
+	if (!new_chunks) {
+		fprintf(stderr, "Error: android sparse try enlarge buffer "
+				"to %zu failed\n", input->total_chunk_size * 2);
+		return -1;
+	}
+
+	memset((uint8_t *)new_chunks + cur_bytes, 0, total_bytes - cur_bytes);
+	input->total_chunk_size *= 2;
+	input->chunks = new_chunks;
+	return 0;
+}
+
+static void android_sparse_free(struct android_sparse_input *input)
+{
+	free(input->chunks);
+	input->chunks = NULL;
+
+	input->error = 0;
+	input->total_chunk_size = input->active_count = 0;
+}
+
+int android_sparse_add_chunk(struct android_sparse_input *input,
+			     uint32_t fs_blocknr, uint32_t count)
+{
+	struct android_sparse_chunk *chunk;
+	int ret;
+
+	if (input->error)
+		return -1;
+
+	ret = android_sparse_enlarge(input);
+	if (ret < 0) {
+		android_sparse_free(input);
+		input->error++;
+		return ret;
+	}
+
+	chunk = &input->chunks[input->active_count];
+	input->active_count++;
+
+	chunk->fs_blocknr = fs_blocknr;
+	chunk->count = count;
+
+	return 0;
+}
+
+static int android_sparse_append_dontcare(int fd_target, size_t blks)
+{
+	struct chunk_header ch = { 0 };
+
+	ch.chunk_type = cpu_to_le32(CHUNK_TYPE_DONT_CARE);
+	ch.chunk_sz = cpu_to_le32(blks);
+	ch.total_sz = sizeof(ch);
+	write(fd_target, &ch, sizeof(ch));
+
+	return 0;
+}
+
+int android_sparse_finish(struct android_sparse_input *input, int fd_target,
+			  size_t block_size, size_t total_blks,
+			  android_sparse_write_t write_cb,
+			  void *private_data)
+{
+	size_t blk = 0, total_chunks = 0;
+	struct sparse_header h = { 0 };
+	uint64_t offset = 0;
+	int ret = 0;
+
+	h.magic = cpu_to_le32(SPARSE_HEADER_MAGIC);
+	h.major_version = cpu_to_le32(1);
+	h.minor_version = cpu_to_le32(0);
+	h.file_hdr_sz = sizeof(h);
+	h.chunk_hdr_sz = sizeof(struct chunk_header);
+	h.blk_sz = cpu_to_le32(block_size);
+	h.total_blks = total_blks;
+
+	if (input->active_count == 0 || !input->chunks)
+		return -1;
+
+	qsort(input->chunks, input->active_count, sizeof(input->chunks[0]),
+		android_sparse_chunk_sort);
+
+	offset = le32_to_cpu(h.file_hdr_sz);
+	for (size_t i = 0; i < input->active_count; i++) {
+		struct android_sparse_chunk *chunk = &input->chunks[i];
+		struct chunk_header ch = { 0 };
+
+		fileseek(fd_target, offset);
+
+		if (chunk->fs_blocknr + chunk->count > total_blks) {
+			fprintf(stderr, "Error: write sparse chunk at #%d:%d "
+				"failed. (overrange total blocks)\n",
+				chunk->fs_blocknr, chunk->count);
+			ret = -1;
+			break;
+		}
+
+		/* appending DONT_CARE for file gaps */
+		if (blk != chunk->fs_blocknr) {
+			android_sparse_append_dontcare(fd_target,
+						       chunk->fs_blocknr - blk);
+			blk = chunk->fs_blocknr;
+			offset += sizeof(ch);
+			total_chunks++;
+		}
+
+		ch.chunk_type = cpu_to_le32(CHUNK_TYPE_RAW);
+		ch.chunk_sz = cpu_to_le32(chunk->count);
+		ch.total_sz = cpu_to_le32(chunk->count * block_size + sizeof(ch));
+		write(fd_target, &ch, sizeof(ch));
+
+		total_chunks++;
+		offset += sizeof(ch);
+
+		ret = write_cb(fd_target, chunk, private_data);
+		if (ret < 0) {
+			fprintf(stderr, "Error: write sparse chunk for fs block"
+				" #%d failed\n",
+				chunk->fs_blocknr);
+			break;
+		}
+
+		offset += chunk->count * block_size;
+		blk += chunk->count;
+	}
+
+	if (ret < 0) {
+		android_sparse_free(input);
+		return ret;
+	}
+
+	if (blk < total_blks) {
+		fileseek(fd_target, offset);
+		android_sparse_append_dontcare(fd_target, total_blks - blk);
+		total_chunks++;
+	}
+
+	h.total_chunks = cpu_to_le32(total_chunks);
+	fileseek(fd_target, 0);
+	write(fd_target, &h, sizeof(h));
+
+	return 0;
+}
+
+static int sparse_gentest_write_chunk(int fd,
+				      struct android_sparse_chunk *chunk,
+				      void *private_data)
+{
+	uint32_t tmp;
+
+	tmp = cpu_to_le32(chunk->fs_blocknr);
+	write(fd, &tmp, sizeof(tmp));
+
+	tmp = cpu_to_le32(chunk->count);
+	write(fd, &tmp, sizeof(tmp));
+
+	return 0;
+}
+
+static int sparse_gentest(int argc, char **argv)
+{
+	struct android_sparse_input input;
+	int fd, ret;
+
+	if (argc < 2) {
+		fprintf(stderr, "Usage: gentest filename\n");
+		return -1;
+	}
+
+	fd = fileopen(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0664);
+	if (fd < 0)
+		return fd;
+
+	android_sparse_init(&input);
+
+	android_sparse_add_chunk(&input,  0, 2);
+	android_sparse_add_chunk(&input,  2, 1);
+	android_sparse_add_chunk(&input,  4, 2);
+	android_sparse_add_chunk(&input, 10, 3);
+
+	ret = android_sparse_finish(&input, fd, 4096, SIZE_MB(2) / 4096,
+				    sparse_gentest_write_chunk,
+				    NULL);
+	close(fd);
+
+	return ret;
+}
 
 /* Following a Raw or Fill or CRC32 chunk is data.
  *  For a Raw chunk, it's the data in chunk_sz * blk_sz.
@@ -248,6 +468,14 @@ static int sparse_unpack2fd(void *private_data, int fd, int fdout, int argc, cha
 	return 0;
 }
 
+static int sparse_main(void *private_data, int argc, char **argv)
+{
+	if (!strcmp(argv[0], "gentest"))
+		return sparse_gentest(argc, argv);
+
+	return -1;
+}
+
 static struct imgeditor sparse_editor = {
 	.name			= "asparse",
 	.descriptor		= "android sparse image editor",
@@ -256,6 +484,7 @@ static struct imgeditor sparse_editor = {
 	.private_data_size	= sizeof(struct sparse_editor_private_data),
 	.detect			= sparse_detect,
 	.list			= sparse_list,
+	.main			= sparse_main,
 	.unpack2fd		= sparse_unpack2fd,
 };
 REGISTER_IMGEDITOR(sparse_editor);

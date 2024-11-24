@@ -86,6 +86,9 @@ macro(require_program execname)
 endmacro()
 
 if (ENABLE_ANDROID OR ENABLE_ALL)
+        include_directories(android)
+        add_definitions(-DCONFIG_ENABLE_ANDROID=1)
+
         list(APPEND src
                 android/android_bootimg.c
                 android/android_sparse.c
