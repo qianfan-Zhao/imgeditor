@@ -20,6 +20,8 @@
 #include "ext4_journal.h"
 #include "structure.h"
 #include "libcrc.h"
+#include "android_sparse.h"
+#include "bitmask.h"
 
 struct ext2_editor_private_data;
 static void *alloc_inode_file(struct ext2_editor_private_data *p, uint32_t ino,
@@ -27,6 +29,8 @@ static void *alloc_inode_file(struct ext2_editor_private_data *p, uint32_t ino,
 static int ext2_whohas_blkno(struct ext2_editor_private_data *p,
 			     uint32_t which_blk,
 			     int *ret_ino);
+static int ext2_add_inode_chunks(struct ext2_editor_private_data *p,
+				 struct android_sparse_input *input);
 
 static size_t aligned_block(size_t size, size_t block_size)
 {
@@ -584,6 +588,10 @@ struct ext2_editor_private_data {
 	uint32_t			inode_size; /* in bytes */
 	uint32_t			n_block_group;
 
+	/* block group bitmasks */
+	struct bitmask			**inode_bitmask;
+	struct bitmask			**data_block_bitmask;
+
 	uint32_t			csum_seed;
 	struct libcrc32			crc32c_le;
 	struct libcrc16			crc16;
@@ -702,6 +710,22 @@ static void ext2_editor_exit(void *private_data)
 	if (p->block_groups) {
 		free(p->block_groups);
 		p->block_groups = NULL;
+	}
+
+	if (p->inode_bitmask) {
+		for (size_t i = 0; i < p->n_block_group; i++)
+			bitmask_free(p->inode_bitmask[i]);
+
+		free(p->inode_bitmask);
+		p->inode_bitmask = NULL;
+	}
+
+	if (p->data_block_bitmask) {
+		for (size_t i = 0; i < p->n_block_group; i++)
+			bitmask_free(p->data_block_bitmask[i]);
+
+		free(p->data_block_bitmask);
+		p->data_block_bitmask = NULL;
 	}
 }
 
@@ -870,7 +894,9 @@ struct ext2_inode_blocks {
 };
 
 static int ext2_inode_blocks_push(struct ext2_editor_private_data *p,
-				  struct ext2_inode_blocks *b, uint32_t blkno)
+				  struct ext2_inode_blocks *b,
+				  uint32_t blkno,
+				  struct bitmask *indir_blocks)
 {
 	if (b->__maxsize == 0) {
 		b->total = 0;
@@ -888,6 +914,9 @@ static int ext2_inode_blocks_push(struct ext2_editor_private_data *p,
 		return -1;
 	}
 
+	if (indir_blocks)
+		bitmask_set(indir_blocks, blkno);
+
 	b->blocks[b->total] = blkno;
 	b->total++;
 
@@ -898,7 +927,8 @@ static int ext2_inode_blocks_push(struct ext2_editor_private_data *p,
 static int								\
 ext2_inode_##name##_blocks_push(struct ext2_editor_private_data *p,	\
 				struct ext2_inode_blocks *b,		\
-				uint32_t blkno)				\
+				uint32_t blkno,				\
+				struct bitmask *indir_blocks)		\
 {									\
 	__le32 *blkbuf = ext2_alloc_read_block(p, blkno);		\
 	size_t maxcount = p->block_size / sizeof(__le32);		\
@@ -910,13 +940,18 @@ ext2_inode_##name##_blocks_push(struct ext2_editor_private_data *p,	\
 		return -1;						\
 	}								\
 									\
+	if (indir_blocks)						\
+		bitmask_set(indir_blocks, blkno);			\
+									\
 	for (size_t i = 0; i < maxcount; i++) {				\
 		uint32_t n = le32_to_cpu(blkbuf[i]);			\
 									\
 		if (n == 0)						\
 			break;						\
 									\
-		ret = todo(p, b, n);					\
+		if (indir_blocks)					\
+			bitmask_set(indir_blocks, n);			\
+		ret = todo(p, b, n, indir_blocks);			\
 		if (ret < 0)						\
 			return ret;					\
 	}								\
@@ -928,10 +963,11 @@ ext2_inode_read_block_define(indir, ext2_inode_blocks_push);
 ext2_inode_read_block_define(double_indir, ext2_inode_indir_blocks_push);
 ext2_inode_read_block_define(triple_indir, ext2_inode_double_indir_blocks_push);
 
-static int ext2_inode_blocks_read(struct ext2_editor_private_data *p,
-				  struct ext2_inode_blocks *b,
-				  struct ext2_inode *inode,
-				  uint32_t ino)
+static int _ext2_inode_blocks_read(struct ext2_editor_private_data *p,
+				   struct ext2_inode_blocks *b,
+				   struct ext2_inode *inode,
+				   uint32_t ino,
+				   struct bitmask *indir_blocks)
 {
 	uint32_t blkno;
 	int ret = 0;
@@ -941,33 +977,41 @@ static int ext2_inode_blocks_read(struct ext2_editor_private_data *p,
 		if (blkno == 0)
 			return ret;
 
-		ret = ext2_inode_blocks_push(p, b, blkno);
+		ret = ext2_inode_blocks_push(p, b, blkno, indir_blocks);
 		if (ret < 0)
 			return ret;
 	}
 
 	blkno = le32_to_cpu(inode->b.blocks.indir_block);
 	if (blkno) {
-		ret = ext2_inode_indir_blocks_push(p, b, blkno);
+		ret = ext2_inode_indir_blocks_push(p, b, blkno, indir_blocks);
 		if (ret < 0)
 			return ret;
 	}
 
 	blkno = le32_to_cpu(inode->b.blocks.double_indir_block);
 	if (blkno) {
-		ret = ext2_inode_double_indir_blocks_push(p, b, blkno);
+		ret = ext2_inode_double_indir_blocks_push(p, b, blkno, indir_blocks);
 		if (ret < 0)
 			return ret;
 	}
 
 	blkno = le32_to_cpu(inode->b.blocks.triple_indir_block);
 	if (blkno) {
-		ret = ext2_inode_triple_indir_blocks_push(p, b, blkno);
+		ret = ext2_inode_triple_indir_blocks_push(p, b, blkno, indir_blocks);
 		if (ret < 0)
 			return ret;
 	}
 
 	return ret;
+}
+
+static int ext2_inode_blocks_read(struct ext2_editor_private_data *p,
+				  struct ext2_inode_blocks *b,
+				  struct ext2_inode *inode,
+				  uint32_t ino)
+{
+	return _ext2_inode_blocks_read(p, b, inode, ino, NULL);
 }
 
 static uint64_t ext4_extent_start_block(struct ext4_extent *ee)
@@ -999,7 +1043,8 @@ struct extent_iterator {
 
 static int extent_iterator_appending(struct ext2_editor_private_data *p,
 				     struct extent_iterator *it,
-				     struct ext4_extent_header *eh)
+				     struct ext4_extent_header *eh,
+				     struct bitmask *data_blocks)
 {
 	int eh_depth = le16_to_cpu(eh->eh_depth);
 	struct ext4_extent_idx *ei;
@@ -1039,7 +1084,10 @@ static int extent_iterator_appending(struct ext2_editor_private_data *p,
 				goto done;
 			}
 
-			ret = extent_iterator_appending(p, it, eh_child);
+			if (data_blocks)
+				bitmask_set(data_blocks, (size_t)blkno);
+
+			ret = extent_iterator_appending(p, it, eh_child, data_blocks);
 			if (ret < 0)
 				goto done;
 		}
@@ -1060,6 +1108,18 @@ static int extent_iterator_appending(struct ext2_editor_private_data *p,
 		memcpy(&it->parent[loaded_entries],
 			eh + 1,
 			le16_to_cpu(eh->eh_entries) * sizeof(struct ext4_extent));
+
+		if (data_blocks) {
+			struct ext4_extent *ee = &it->parent[loaded_entries];
+
+			for (int i = 0; i < le16_to_cpu(eh->eh_entries); i++) {
+				uint64_t start = ext4_extent_start_block(ee);
+
+				bitmask_set_bits(data_blocks, start,
+						 le16_to_cpu(ee->ee_len));
+				ee++;
+			}
+		}
 	}
 
 done:
@@ -1070,9 +1130,10 @@ done:
 	return ret;
 }
 
-static int extent_iterator_init(struct ext2_editor_private_data *p,
-				struct extent_iterator *it,
-				uint32_t ino)
+static int _extent_iterator_init(struct ext2_editor_private_data *p,
+				 struct extent_iterator *it,
+				 uint32_t ino,
+				 struct bitmask *data_blocks)
 {
 	struct ext4_extent_header *eh;
 	uint16_t eh_depth;
@@ -1104,7 +1165,14 @@ static int extent_iterator_init(struct ext2_editor_private_data *p,
 		 return -1;
 	}
 
-	return extent_iterator_appending(p, it, eh);
+	return extent_iterator_appending(p, it, eh, data_blocks);
+}
+
+static int extent_iterator_init(struct ext2_editor_private_data *p,
+				struct extent_iterator *it,
+				uint32_t ino)
+{
+	return _extent_iterator_init(p, it, ino, NULL);
 }
 
 static void extent_iterator_exit(struct extent_iterator *it)
@@ -1532,6 +1600,40 @@ static int ext2_editor_init_layouts(struct ext2_editor_private_data *p)
 	return 0;
 }
 
+static int ext2_alloc_bitmasks(struct ext2_editor_private_data *p)
+{
+	p->inode_bitmask = calloc(p->n_block_group, sizeof(struct bitmask *));
+	if (!p->inode_bitmask)
+		return -1;
+
+	p->data_block_bitmask = calloc(p->n_block_group, sizeof(struct bitmask *));
+	if (!p->data_block_bitmask)
+		return -1;
+
+	for (size_t i = 0; i < p->n_block_group; i++) {
+		struct ext2_block_group *bgrp = &p->block_groups[i];
+		struct bitmask *inode_bitmask, *data_bitmask;
+
+		inode_bitmask = alloc_bitmask(p->block_size * 8);
+		if (!inode_bitmask)
+			return -1;
+
+		data_bitmask = alloc_bitmask(p->block_size * 8);
+		if (!data_bitmask)
+			return -1;
+
+		p->inode_bitmask[i] = inode_bitmask;
+		p->data_block_bitmask[i] = data_bitmask;
+
+		ext2_read_blocks(p, le32_to_cpu(bgrp->inode_id), 1,
+				 inode_bitmask->buffer, p->block_size);
+		ext2_read_blocks(p, le32_to_cpu(bgrp->block_id), 1,
+				 data_bitmask->buffer, p->block_size);
+	}
+
+	return 0;
+}
+
 static int64_t ext2_total_size(void *private_data, int fd);
 
 static int ext2_detect(void *private_data, int force_type, int fd)
@@ -1659,6 +1761,13 @@ static int ext2_detect(void *private_data, int force_type, int fd)
 				return -1;
 			}
 		}
+	}
+
+	ret = ext2_alloc_bitmasks(p);
+	if (ret < 0) {
+		fprintf_if_force_type("Error: load inode/data block bitmap failed");
+		ext2_editor_exit(p);
+		return ret;
 	}
 
 	ret = ext2_read_inode(p, EXT2_ROOT_INO, &p->root_inode);
@@ -2309,6 +2418,63 @@ static int ext2_do_whohas(void *private_data, int fd, int argc, char **argv)
 	return -1;
 }
 
+#ifdef CONFIG_ENABLE_ANDROID
+static int ext2_write_sparse_chunk(int fd_target,
+				   struct android_sparse_chunk *chunk,
+				   void *private_data)
+{
+	off64_t target_offset = lseek64(fd_target, 0, SEEK_CUR);
+	struct ext2_editor_private_data *p = private_data;
+
+	dd64(p->fd, fd_target,
+		chunk->fs_blocknr * p->block_size,
+		target_offset,
+		chunk->count * p->block_size,
+		NULL, NULL);
+	return 0;
+}
+
+static int ext2_do_sparse(void *private_data, int fd, int argc, char **argv)
+{
+	struct ext2_editor_private_data *p = private_data;
+	struct android_sparse_input input;
+	int ret = -1, fd_target;
+
+	if (argc < 2) {
+		fprintf(stderr, "Usage: sparse output.simg\n");
+		return -1;
+	}
+
+	fd_target = fileopen(argv[1], O_RDWR | O_CREAT | O_TRUNC, 0664);
+	if (fd_target < 0)
+		goto done;
+
+	android_sparse_init(&input, p->block_size,
+			    le32_to_cpu(p->sblock.total_blocks));
+
+	/* appending meta data */
+	for (size_t i = 0; i < p->n_layout; i++) {
+		struct disk_layout *layout = &p->layouts[i];
+
+		android_sparse_add_chunk(&input, layout->start_block,
+					 layout->len_block);
+	}
+
+	ext2_add_inode_chunks(p, &input);
+	if (input.error) {
+		fprintf(stderr, "Error: add sparse chunks failed. "
+				"(no enough memory?)\n");
+		goto done;
+	}
+
+	ret = android_sparse_finish(&input, fd_target,
+				    ext2_write_sparse_chunk, p);
+done:
+	close(fd_target);
+	return ret;
+}
+#endif
+
 static int ext2_main(void *private_data, int fd, int argc, char **argv)
 {
 	if (argc >= 1) {
@@ -2332,6 +2498,10 @@ static int ext2_main(void *private_data, int fd, int argc, char **argv)
 			return ext2_do_layout(private_data, fd, argc, argv);
 		else if (!strcmp(argv[0], "whohas"))
 			return ext2_do_whohas(private_data, fd, argc, argv);
+	#ifdef CONFIG_ENABLE_ANDROID
+		else if (!strcmp(argv[0], "sparse"))
+			return ext2_do_sparse(private_data, fd, argc, argv);
+	#endif
 	}
 
 	return ext2_do_list(private_data, fd, argc, argv);
@@ -2603,6 +2773,14 @@ static int ext2_whohas_blkno(struct ext2_editor_private_data *p,
 	struct ext2_sblock *sb = &p->sblock;
 	int inodes_used = le32_to_cpu(sb->total_inodes)
 			- le32_to_cpu(sb->free_inodes);
+	struct bitmask *data_blocks
+			= alloc_bitmask(le32_to_cpu(sb->total_blocks));
+	int ret_found = -1;
+
+	if (!data_blocks) {
+		fprintf(stderr, "Error: alloc bitmask failed\n");
+		return -1;
+	}
 
 	for (int ino = 1; ino <= inodes_used; ino++) {
 		struct ext2_inode inode;
@@ -2610,9 +2788,25 @@ static int ext2_whohas_blkno(struct ext2_editor_private_data *p,
 		uint32_t type;
 		int ret;
 
+		bitmask_memset(data_blocks, 0);
+
 		ret = ext2_read_inode(p, ino, &inode);
 		if (ret < 0)
 			continue;
+
+		/* A block number saved in it's b.blocks.double_indir_block
+		 * for reserved gdt used.
+		 * imgeditor tests/fs/ext4/simple_abc.ext4 -- inode 7
+		 */
+		if (ino == EXT2_RESIZE_INO) {
+			uint32_t blknr =
+				le32_to_cpu(inode.b.blocks.double_indir_block);
+
+			if (blknr)
+				bitmask_set(data_blocks, blknr);
+
+			goto compare_blknr;
+		}
 
 		filesz = le32_to_cpu(inode.size_high);
 		filesz = filesz << 32;
@@ -2626,51 +2820,172 @@ static int ext2_whohas_blkno(struct ext2_editor_private_data *p,
 
 		/* search in regular file and directory only */
 		type = le32_to_cpu(inode.mode) & INODE_MODE_S_MASK;
-		if (!(type == INODE_MODE_S_IFREG || type == INODE_MODE_S_IFDIR))
+		if (type == INODE_MODE_S_IFLINK) {
+			/* sort symlink doesn't need extra block */
+			if (filesz < sizeof(inode.b.symlink))
+				continue;
+		} else if (!(type == INODE_MODE_S_IFREG || type == INODE_MODE_S_IFDIR))
 			continue;
 
 		if (!(le32_to_cpu(inode.flags) & EXT4_EXTENTS_FL)) {
-			/* this is ext2 based filesystem */
 			struct ext2_inode_blocks b = { .blocks = NULL };
 
-			ret = ext2_inode_blocks_read(p, &b, &inode, ino);
+			ret = _ext2_inode_blocks_read(p, &b, &inode, ino,
+						      data_blocks);
 			if (ret < 0)
 				continue;
-
-			for (size_t i = 0; i < b.total; i++) {
-				if (b.blocks[i] == which_blk) {
-					free(b.blocks);
-					*ret_ino = ino;
-					return 0;
-				}
-			}
 
 			free(b.blocks);
 		} else {
 			struct extent_iterator it;
 
-			ret = extent_iterator_init(p, &it, ino);
+			ret = _extent_iterator_init(p, &it, ino, data_blocks);
 			if (ret < 0)
 				continue;
 
-			extent_list_foreach(&it) {
-				struct ext4_extent *ee = it.ee;
-				uint64_t first = ext4_extent_start_block(ee);
-				uint64_t last = first +
-						le16_to_cpu(ee->ee_len) - 1;
+			extent_iterator_exit(&it);
+		}
 
-				if (which_blk >= first && which_blk <= last) {
-					extent_iterator_exit(&it);
-					*ret_ino = ino;
-					return 0;
-				}
+	compare_blknr:
+		if (bitmask_get(data_blocks, which_blk)) {
+			if (ret_ino)
+				*ret_ino = ino;
+			ret_found = 0;
+			break;
+		}
+	}
+
+	bitmask_free(data_blocks);
+	return ret_found;
+}
+
+#if CONFIG_ENABLE_ANDROID
+static int android_sparse_add_bitmask_chunks(struct android_sparse_input *input,
+					     struct bitmask *b,
+					     int ino)
+{
+	int start = 0;
+
+	while (1) {
+		int end;
+
+		start = bitmask_next_one(b, start);
+		if (start < 0)
+			break;
+
+		end = bitmask_next_zero(b, start + 1);
+		if (end < 0) {
+			if (get_verbose_level() > 0)
+				printf("add inode #%d blocks #%d:%zu\n",
+					ino, start, b->total_bits - start);
+			android_sparse_add_chunk(input, start,
+						 b->total_bits - start);
+			break;
+		}
+
+		if (get_verbose_level() > 0)
+			printf("add inode #%d blocks #%d:%d\n",
+				ino, start, end - start);
+		android_sparse_add_chunk(input, start, end - start);
+		start = end;
+	}
+
+	return 0;
+}
+
+static int ext2_add_inode_chunks(struct ext2_editor_private_data *p,
+				 struct android_sparse_input *input)
+{
+	struct ext2_sblock *sb = &p->sblock;
+	int inodes_used = le32_to_cpu(sb->total_inodes)
+			- le32_to_cpu(sb->free_inodes);
+	struct bitmask *data_blocks
+			= alloc_bitmask(le32_to_cpu(sb->total_blocks));
+
+	if (!data_blocks) {
+		fprintf(stderr, "Error: alloc bitmask failed\n");
+		return -1;
+	}
+
+	for (int ino = 1; ino <= inodes_used; ino++) {
+		struct ext2_inode inode;
+		uint64_t filesz;
+		uint32_t type;
+		int ret;
+
+		bitmask_memset(data_blocks, 0);
+
+		ret = ext2_read_inode(p, ino, &inode);
+		if (ret < 0)
+			continue;
+
+		/* A block number saved in it's b.blocks.double_indir_block
+		 * for reserved gdt used.
+		 * imgeditor tests/fs/ext4/simple_abc.ext4 -- inode 7
+		 */
+		if (ino == EXT2_RESIZE_INO) {
+			uint32_t blknr =
+				le32_to_cpu(inode.b.blocks.double_indir_block);
+
+			if (blknr) {
+				bitmask_set(data_blocks, blknr);
+				android_sparse_add_bitmask_chunks(input,
+								  data_blocks,
+								  ino);
 			}
+
+			continue;
+		}
+
+		filesz = le32_to_cpu(inode.size_high);
+		filesz = filesz << 32;
+		filesz |= le32_to_cpu(inode.size);
+		if (filesz == 0)
+			continue;
+
+		/* empty inode */
+		if (le32_to_cpu(inode.ctime) == 0)
+			continue;
+
+		/* search in regular file and directory only */
+		type = le32_to_cpu(inode.mode) & INODE_MODE_S_MASK;
+		if (type == INODE_MODE_S_IFLINK) {
+			/* sort symlink doesn't need extra block */
+			if (filesz < sizeof(inode.b.symlink))
+				continue;
+		} else if (!(type == INODE_MODE_S_IFREG || type == INODE_MODE_S_IFDIR))
+			continue;
+
+		if (!(le32_to_cpu(inode.flags) & EXT4_EXTENTS_FL)) {
+			struct ext2_inode_blocks b = { .blocks = NULL };
+
+			ret = _ext2_inode_blocks_read(p, &b, &inode, ino,
+						      data_blocks);
+			if (ret < 0)
+				continue;
+
+			android_sparse_add_bitmask_chunks(input,
+							  data_blocks,
+							  ino);
+			free(b.blocks);
+		} else {
+			struct extent_iterator it;
+
+			ret = _extent_iterator_init(p, &it, ino, data_blocks);
+			if (ret < 0)
+				continue;
+
+			android_sparse_add_bitmask_chunks(input,
+							  data_blocks,
+							  ino);
 			extent_iterator_exit(&it);
 		}
 	}
 
-	return -1;
+	bitmask_free(data_blocks);
+	return 0;
 }
+#endif
 
 static int unpack_dirent(struct ext2_editor_private_data *p, uint32_t ino,
 			 const char *parent_dir)

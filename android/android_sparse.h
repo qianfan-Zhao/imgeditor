@@ -16,15 +16,18 @@ struct android_sparse_chunk {
 	uint32_t			count;
 };
 
+/* @blksz: the raw filesystem's block size in bytes
+ * @total_blks: how much blocks the raw filesystem has.
+ */
 struct android_sparse_input {
-	struct android_sparse_chunk	*chunks;
-	size_t				active_count;
-	size_t				total_chunk_size;
-
+	size_t				blksz;
+	size_t				total_blks;
 	size_t				error;
+	struct bitmask			*chunk_bitmasks;
 };
 
-int android_sparse_init(struct android_sparse_input *input);
+int android_sparse_init(struct android_sparse_input *input,
+			size_t blksz, size_t total_blks);
 
 int android_sparse_add_chunk(struct android_sparse_input *input,
 			     uint32_t fs_blocknr, uint32_t count);
@@ -33,12 +36,8 @@ typedef int (*android_sparse_write_t)(int fd_target,
 				      struct android_sparse_chunk *chunk,
 				      void *private_data);
 
-/* @blksz: the raw filesystem's block size in bytes
- * @total_blks: how much blocks the raw filesystem has.
- */
 int android_sparse_finish(struct android_sparse_input *input,
 			  int fd_target,
-			  size_t blksz, size_t total_blks,
 			  android_sparse_write_t write_cb,
 			  void *private_data);
 
