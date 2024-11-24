@@ -24,6 +24,9 @@
 struct ext2_editor_private_data;
 static void *alloc_inode_file(struct ext2_editor_private_data *p, uint32_t ino,
 			      uint64_t *ret_filesize);
+static int ext2_whohas_blkno(struct ext2_editor_private_data *p,
+			     uint32_t which_blk,
+			     int *ret_ino);
 
 static size_t aligned_block(size_t size, size_t block_size)
 {
@@ -1994,7 +1997,7 @@ static int ext2_journal_print_desc(struct journal_foreach_arg *arg,
 				   uint32_t flags)
 {
 
-	char *disk_layout_info = NULL, s[256];
+	char *fs_blocknr_info = NULL, s[256];
 
 	if (get_verbose_level() == 0) {
 		const struct disk_layout *layout;
@@ -2006,15 +2009,25 @@ static int ext2_journal_print_desc(struct journal_foreach_arg *arg,
 
 		layout = ext2_editor_disk_layout_match_block(arg->ext,
 							     fs_blocknr);
-		disk_layout_info = format_disk_layout(layout, s, sizeof(s));
+		if (!layout) {
+			int ino = -1;
+
+			if (!ext2_whohas_blkno(arg->ext, fs_blocknr, &ino)) {
+				snprintf(s, sizeof(s), "inode #%d", ino);
+				fs_blocknr_info = s;
+			}
+		} else {
+			fs_blocknr_info =
+				format_disk_layout(layout, s, sizeof(s));
+		}
 	}
 
 	printf("%27sFS blocknr %-8" PRIu64
 		"logged at journal block %-5" PRIu64 " with flags 0x%x",
 		"", fs_blocknr, journal_blocknr, flags);
 
-	if (disk_layout_info)
-		printf(" (%s)", disk_layout_info);
+	if (fs_blocknr_info)
+		printf(" (%s)", fs_blocknr_info);
 
 	printf("\n");
 
@@ -2262,6 +2275,40 @@ static int ext2_do_layout(void *private_data, int fd, int argc, char **argv)
 	return 0;
 }
 
+/* show extent in block address */
+static int ext2_do_whohas(void *private_data, int fd, int argc, char **argv)
+{
+	struct ext2_editor_private_data *p = private_data;
+	const struct disk_layout *layout;
+	int ino = -1, blkno = -1;
+	int ret;
+
+	if (argc > 1)
+		blkno = (int)strtol(argv[1], NULL, 0);
+
+	if (blkno < 0) {
+		fprintf(stderr, "Usage: ext2 whohas #blkno\n");
+		return -1;
+	}
+
+	layout = ext2_editor_disk_layout_match_block(p, blkno);
+	if (layout) {
+		char s[256];
+
+		format_disk_layout(layout, s, sizeof(s));
+		printf("%s\n", s);
+		return 0;
+	}
+
+	ret = ext2_whohas_blkno(p, blkno, &ino);
+	if (!ret) {
+		printf("inode #%d\n", ino);
+		return ret;
+	}
+
+	return -1;
+}
+
 static int ext2_main(void *private_data, int fd, int argc, char **argv)
 {
 	if (argc >= 1) {
@@ -2283,6 +2330,8 @@ static int ext2_main(void *private_data, int fd, int argc, char **argv)
 			return ext2_do_orphan(private_data, fd, argc, argv);
 		else if (!strcmp(argv[0], "layout"))
 			return ext2_do_layout(private_data, fd, argc, argv);
+		else if (!strcmp(argv[0], "whohas"))
+			return ext2_do_whohas(private_data, fd, argc, argv);
 	}
 
 	return ext2_do_list(private_data, fd, argc, argv);
@@ -2545,6 +2594,82 @@ static void *alloc_inode_file(struct ext2_editor_private_data *p, uint32_t ino,
 	extent_iterator_exit(&it);
 
 	return buf;
+}
+
+static int ext2_whohas_blkno(struct ext2_editor_private_data *p,
+			     uint32_t which_blk,
+			     int *ret_ino)
+{
+	struct ext2_sblock *sb = &p->sblock;
+	int inodes_used = le32_to_cpu(sb->total_inodes)
+			- le32_to_cpu(sb->free_inodes);
+
+	for (int ino = 1; ino <= inodes_used; ino++) {
+		struct ext2_inode inode;
+		uint64_t filesz;
+		uint32_t type;
+		int ret;
+
+		ret = ext2_read_inode(p, ino, &inode);
+		if (ret < 0)
+			continue;
+
+		filesz = le32_to_cpu(inode.size_high);
+		filesz = filesz << 32;
+		filesz |= le32_to_cpu(inode.size);
+		if (filesz == 0)
+			continue;
+
+		/* empty inode */
+		if (le32_to_cpu(inode.ctime) == 0)
+			continue;
+
+		/* search in regular file and directory only */
+		type = le32_to_cpu(inode.mode) & INODE_MODE_S_MASK;
+		if (!(type == INODE_MODE_S_IFREG || type == INODE_MODE_S_IFDIR))
+			continue;
+
+		if (!(le32_to_cpu(inode.flags) & EXT4_EXTENTS_FL)) {
+			/* this is ext2 based filesystem */
+			struct ext2_inode_blocks b = { .blocks = NULL };
+
+			ret = ext2_inode_blocks_read(p, &b, &inode, ino);
+			if (ret < 0)
+				continue;
+
+			for (size_t i = 0; i < b.total; i++) {
+				if (b.blocks[i] == which_blk) {
+					free(b.blocks);
+					*ret_ino = ino;
+					return 0;
+				}
+			}
+
+			free(b.blocks);
+		} else {
+			struct extent_iterator it;
+
+			ret = extent_iterator_init(p, &it, ino);
+			if (ret < 0)
+				continue;
+
+			extent_list_foreach(&it) {
+				struct ext4_extent *ee = it.ee;
+				uint64_t first = ext4_extent_start_block(ee);
+				uint64_t last = first +
+						le16_to_cpu(ee->ee_len) - 1;
+
+				if (which_blk >= first && which_blk <= last) {
+					extent_iterator_exit(&it);
+					*ret_ino = ino;
+					return 0;
+				}
+			}
+			extent_iterator_exit(&it);
+		}
+	}
+
+	return -1;
 }
 
 static int unpack_dirent(struct ext2_editor_private_data *p, uint32_t ino,
