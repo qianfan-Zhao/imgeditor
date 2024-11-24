@@ -4,6 +4,15 @@
 
 source "${CMAKE_SOURCE_DIR}/tests/common.sh"
 
+function sparse_pack_api_test() {
+    local filename=${TEST_TMPDIR}/$1
+    local sha=$2
+
+    assert_imgeditor_successful --type asparse -- gentest ${filename} || exit $?
+    assert_imgeditor_successful ${filename} || exit $?
+    assert_sha1sum ${filename} ${sha}
+}
+
 # generate system image by `mkfs.ext2 -t ext2` to test the ext2 compatible.
 function gen_ext2fs() {
     local dir=$1 img_size=$2
@@ -56,6 +65,8 @@ function many_files() {
         done
     )
 }
+
+sparse_pack_api_test 1.simg 666d020c49a9775e0603fc8d9b67d55d248d062f || exit $?
 
 imgeditor_unpack_ext4_simg_test simple_abc 16MiB || exit $?
 imgeditor_unpack_ext4_simg_test many_files 16MiB || exit $?
