@@ -51,5 +51,6 @@ extern size_t test_total, test_failed;
 void xopt_test();
 void crc_test();
 void hash_compatible_test();
+void bitmask_test();
 
 #endif

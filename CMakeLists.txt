@@ -16,6 +16,7 @@ set(src_api_test
         tests/api_test/xopt.c
         tests/api_test/hash_compatible.c
         tests/api_test/libcrc.c
+        tests/api_test/bitmask.c
         tests/api_test/main.c
 )
 
@@ -171,6 +172,7 @@ set(libimgeditor_src
         exini.c
         gd.c
         misc.c
+        bitmask.c
         libs/cJSON/cJSON.c
         libs/minilzo/minilzo.c
         libs/libxopt/libxopt.c

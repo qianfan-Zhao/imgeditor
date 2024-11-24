@@ -9,6 +9,7 @@ int main(int argc, char **argv)
 	xopt_test();
 	crc_test();
 	hash_compatible_test();
+	bitmask_test();
 
 	printf("total %zu, failed %zu\n", test_total, test_failed);
 	if (test_failed)

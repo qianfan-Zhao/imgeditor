@@ -66,7 +66,7 @@ function many_files() {
     )
 }
 
-sparse_pack_api_test 1.simg 666d020c49a9775e0603fc8d9b67d55d248d062f || exit $?
+sparse_pack_api_test 1.simg 426e9a5ce8adb8c1983ff189168fbbbfdae4b90d || exit $?
 
 imgeditor_unpack_ext4_simg_test simple_abc 16MiB || exit $?
 imgeditor_unpack_ext4_simg_test many_files 16MiB || exit $?
