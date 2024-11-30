@@ -6,11 +6,19 @@ source "${CMAKE_SOURCE_DIR}/tests/common.sh"
 
 function sparse_pack_api_test() {
     local filename=${TEST_TMPDIR}/$1
-    local sha=$2
+    local sha=$2 unpack_sha=$3
+    local tmp
 
     assert_imgeditor_successful --type asparse -- gentest ${filename} || exit $?
     assert_imgeditor_successful ${filename} || exit $?
-    assert_sha1sum ${filename} ${sha}
+    assert_sha1sum ${filename} ${sha} || exit $?
+
+    assert_imgeditor_successful ${filename} -- sha1sum || exit $?
+    tmp=$(cat ${TEST_TMPDIR}/imgeditor-stdio.txt)
+    if [ -z "${tmp}" ] || [ X"${tmp}" != X"${unpack_sha}" ] ; then
+        log:error "imgeditor ${filename} -- sha1sum doesn't match, sha1sum is ${tmp}"
+        exit 1
+    fi
 }
 
 # generate system image by `mkfs.ext2 -t ext2` to test the ext2 compatible.
@@ -66,7 +74,9 @@ function many_files() {
     )
 }
 
-sparse_pack_api_test 1.simg 426e9a5ce8adb8c1983ff189168fbbbfdae4b90d || exit $?
+sparse_pack_api_test 1.simg \
+        426e9a5ce8adb8c1983ff189168fbbbfdae4b90d \
+        9586f4c39339a8315568b8e4e312f9f2340f12c9 || exit $?
 
 imgeditor_unpack_ext4_simg_test simple_abc 16MiB || exit $?
 imgeditor_unpack_ext4_simg_test many_files 16MiB || exit $?
