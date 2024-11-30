@@ -1513,6 +1513,37 @@ static bool is_power_of(int a, int b)
 	return (a == b);
 }
 
+static size_t next_sparse_super_block_number(size_t n)
+{
+	const size_t power_bases[3] = { 3, 5, 7 };
+	size_t min, tmpbuf[3] = { 3, 5, 7 };
+
+	if (n == 1)
+		return 3;
+
+	while (1) {
+		int not_ready = 0;
+
+		for (int j = 0; j < 3; j++) {
+			if (tmpbuf[j] <= n) {
+				tmpbuf[j] *= power_bases[j];
+				not_ready++;
+			}
+		}
+
+		if (!not_ready)
+			break;
+	}
+
+	min = tmpbuf[0];
+	for (size_t j = 1; j < 3; j++) {
+		if (tmpbuf[j] < min)
+			min = tmpbuf[j];
+	}
+
+	return min;
+}
+
 static bool ext2_block_group_has_backup_sb(struct ext2_sblock *sb, size_t group)
 {
 	if (ext2_has_ro_compat_feature(sb, EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER)) {
@@ -2475,6 +2506,88 @@ done:
 }
 #endif
 
+/* https://blogs.oracle.com/linux/post/the-resize-inode-in-the-ext4-filesystem */
+static int ext2_do_resize_inode(void *private_data, int fd, int argc, char **argv)
+{
+	struct ext2_editor_private_data *p = private_data;
+	struct ext2_inode inode;
+	uint32_t *dind_buf;
+	uint32_t dind;
+	int ret;
+
+	if (!(le32_to_cpu(p->sblock.feature_compatibility)
+		& EXT4_FEATURE_COMPAT_RESIZE_INODE)) {
+		fprintf(stderr, "No EXT4_FEATURE_COMPAT_RESIZE_INODE\n");
+		return 0;
+	}
+
+	if (!ext2_has_ro_compat_feature(&p->sblock, EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER)) {
+		fprintf(stderr, "No EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER\n");
+		return 0;
+	}
+
+	ret = ext2_read_inode(p, EXT2_RESIZE_INO, &inode);
+	if (ret < 0)
+		return ret;
+
+	dind = le32_to_cpu(inode.b.blocks.double_indir_block);
+	if (dind == 0) {
+		fprintf(stderr, "Error: double_indir_block in inode 7 is zero\n");
+		return -1;
+	}
+
+	dind_buf = ext2_alloc_read_block(p, dind);
+	if (!dind_buf) {
+		fprintf(stderr, "Error: raad dind block #%d failed\n", dind);
+		return -1;
+	}
+
+	printf("DIND block is: #%d\n", dind);
+
+	printf("%4s  ", " ");
+	for (size_t group = 1; group < p->n_block_group;) {
+		char s[32];
+
+		snprintf(s, sizeof(s), "group%zu", group);
+		printf("%8s ", s);
+
+		group = next_sparse_super_block_number(group);
+	}
+	printf("\n");
+
+	for (uint32_t i = 0; i < p->block_size / sizeof(uint32_t); i++) {
+		uint32_t *ind, ind_blk = dind_buf[i];
+
+		if (ind_blk == 0)
+			continue;
+
+		ind = ext2_alloc_read_block(p, dind_buf[i]);
+		if (!ind) {
+			fprintf(stderr, "Error: read ind block #%d failed\n",
+				dind_buf[i]);
+			free(dind_buf);
+			return -1;
+		}
+
+		printf("%4d: ", i);
+
+		for (uint32_t j = 0; j < p->block_size / sizeof(uint32_t); j++) {
+			uint32_t blk = le32_to_cpu(ind[j]);
+
+			if (blk == 0)
+				break;
+
+			printf("%8d ", blk);
+		}
+
+		printf("\n");
+		free(ind);
+	}
+
+	free(dind_buf);
+	return 0;
+}
+
 static int ext2_main(void *private_data, int fd, int argc, char **argv)
 {
 	if (argc >= 1) {
@@ -2498,10 +2611,15 @@ static int ext2_main(void *private_data, int fd, int argc, char **argv)
 			return ext2_do_layout(private_data, fd, argc, argv);
 		else if (!strcmp(argv[0], "whohas"))
 			return ext2_do_whohas(private_data, fd, argc, argv);
+		else if (!strcmp(argv[0], "resize_inode"))
+			return ext2_do_resize_inode(private_data, fd, argc, argv);
 	#ifdef CONFIG_ENABLE_ANDROID
 		else if (!strcmp(argv[0], "sparse"))
 			return ext2_do_sparse(private_data, fd, argc, argv);
 	#endif
+
+		fprintf(stderr, "Error: unknown command %s\n", argv[0]);
+		return -1;
 	}
 
 	return ext2_do_list(private_data, fd, argc, argv);
