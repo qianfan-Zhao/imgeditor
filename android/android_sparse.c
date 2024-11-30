@@ -9,6 +9,8 @@
 #include "imgeditor.h"
 #include "android_sparse.h"
 #include "bitmask.h"
+#include "structure.h"
+#include "hash_compatible.h"
 
 struct sparse_header {
   __le32	magic;		/* 0xed26ff3a */
@@ -22,6 +24,18 @@ struct sparse_header {
   __le32	image_checksum; /* CRC32 checksum of the original data, counting "don't care" */
 				/* as 0. Standard 802.3 polynomial, use a Public Domain */
 				/* table implementation */
+};
+
+static const struct structure_item st_sparse_header[] = {
+	STRUCTURE_ITEM(struct sparse_header, magic,		structure_item_print_xunsigned),
+	STRUCTURE_ITEM(struct sparse_header, major_version,	structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct sparse_header, minor_version,	structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct sparse_header, file_hdr_sz,	structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct sparse_header, chunk_hdr_sz,	structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct sparse_header, blk_sz,		structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct sparse_header, total_blks,	structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct sparse_header, image_checksum,	structure_item_print_xunsigned),
+	STRUCTURE_ITEM_END(),
 };
 
 #define SPARSE_HEADER_MAGIC	0xed26ff3a
@@ -252,17 +266,14 @@ static int sparse_list(void *private_data, int fd, int argc, char **argv)
 {
 	struct sparse_editor_private_data *p = private_data;
 	struct sparse_header *header = &p->head;
+	size_t fs_blocknr = 0;
 	size_t offset;
 	uint32_t fill;
 
-	printf("magic:           0x%x\n", header->magic);
-	printf("major_version:   0x%x\n", header->major_version);
-	printf("minor_version:   0x%x\n", header->minor_version);
-	printf("file_hdr_sz:     %d\n", header->file_hdr_sz);
-	printf("chunk_hdr_sz:    %d\n", header->chunk_hdr_sz);
-	printf("blk_sz:          %d\n", header->blk_sz);
-	printf("total_blks:      %d\n", header->total_blks);
-	printf("total_chunks:    %d\n", header->total_chunks);
+	structure_print("%-21s", header, st_sparse_header);
+
+	printf("\n%-13s %4s %9s %9s %9s\n",
+		"#chunk", "type", "fs_start", "fs_end", "blocks");
 
 	offset = header->file_hdr_sz;
 	for (size_t i = 0; i < header->total_chunks; i++) {
@@ -296,8 +307,11 @@ static int sparse_list(void *private_data, int fd, int argc, char **argv)
 			return -1;
 		}
 
-		printf("chunk #%04zu: %s %9d blocks, size = 0x%08x",
-			i, type, chunk.chunk_sz, chunk.total_sz);
+		printf("chunk #%04zu: %4s  %9zu %9zu %9d blocks, size = sizeof(chunk_header)+0x%08x",
+			i, type,
+			fs_blocknr, fs_blocknr + chunk.chunk_sz - 1,
+			chunk.chunk_sz,
+			(unsigned int)(chunk.total_sz - sizeof(struct chunk_header)));
 
 		switch (chunk.chunk_type) {
 		case CHUNK_TYPE_FILL:
@@ -317,9 +331,127 @@ static int sparse_list(void *private_data, int fd, int argc, char **argv)
 
 		printf("\n");
 		offset += chunk.total_sz;
+		fs_blocknr += chunk.chunk_sz;
 	}
 
 	return 0;
+}
+
+static void sparse_hash_update(uint8_t *buf, size_t bufsz, void *private_data)
+{
+	hash_context_t *hash = private_data;
+
+	hash_context_update(hash, buf, bufsz);
+}
+
+static void blkbuf_fill(uint8_t *blkbuf, size_t bufsz, uint32_t fill)
+{
+	uint32_t *p = (uint32_t *)blkbuf;
+
+	for (size_t i = 0; i < bufsz / sizeof(uint32_t); i++)
+		p[i] = fill;
+}
+
+/*
+ * calc the unpack file's sha1sum.
+ */
+static int sparse_sha1sum(void *private_data, int fd, int argc, char **argv)
+{
+	struct sparse_editor_private_data *p = private_data;
+	size_t blkbuf_sz = le32_to_cpu(p->head.blk_sz);
+	uint8_t *blkbuf;
+	hash_context_t hash;
+	size_t offset, dgst_sz;
+	uint32_t fill;
+	int ret = 0;
+
+	blkbuf = malloc(blkbuf_sz);
+	if (!blkbuf) {
+		fprintf(stderr, "Error: alloc block buffer failed\n");
+		return -1;
+	}
+
+	hash_context_init(&hash, HASH_TYPE_SHA1);
+
+	offset = le16_to_cpu(p->head.file_hdr_sz);
+	for (size_t i = 0; i < le32_to_cpu(p->head.total_chunks); i++) {
+		struct chunk_header chunk;
+		int n;
+
+		lseek(fd, offset, SEEK_SET);
+		n = read(fd, &chunk, sizeof(chunk));
+		if (n != (int)sizeof(chunk)) {
+			fprintf(stderr, "Error: read chunk #%zu failed\n", i);
+			ret = -1;
+			goto done;
+		}
+
+		switch (chunk.chunk_type) {
+		case CHUNK_TYPE_RAW:
+			for (uint32_t i = 0; i < le32_to_cpu(chunk.chunk_sz); i++) {
+				dd64(fd,
+				     -1, /* fddst */
+				     offset + sizeof(chunk) + i * blkbuf_sz,
+				     -1, /* offt_dst */
+				     blkbuf_sz,
+				     sparse_hash_update,
+				     &hash);
+			}
+			break;
+		case CHUNK_TYPE_DONT_CARE:
+			memset(blkbuf, 0, blkbuf_sz);
+			for (uint32_t i = 0; i < le32_to_cpu(chunk.chunk_sz); i++)
+				sparse_hash_update(blkbuf, blkbuf_sz, &hash);
+			break;
+		case CHUNK_TYPE_CRC32:
+			break;
+		case CHUNK_TYPE_FILL:
+			/* n means the bytes count to fill */
+			n = chunk.total_sz - sizeof(chunk);
+			if (n != sizeof(fill)) {
+				fprintf(stderr, "Error: bad fill size %d\n",
+					chunk.total_sz);
+				ret = -1;
+				goto done;
+			}
+
+			/* continue reading the fill number */
+			read(fd, &fill, sizeof(fill));
+			blkbuf_fill(blkbuf, blkbuf_sz, fill);
+			for (uint32_t i = 0; i < le32_to_cpu(chunk.chunk_sz); i++)
+				sparse_hash_update(blkbuf, blkbuf_sz, &hash);
+			break;
+		default:
+			fprintf(stderr, "Error: unknown chunk type in offset 0x%08lx\n",
+				(unsigned long)offset);
+			ret = -1;
+			goto done;
+		}
+
+		offset += le32_to_cpu(chunk.total_sz);
+	}
+
+done:
+	if (ret == 0) {
+		dgst_sz = hash_context_finish(&hash, blkbuf, blkbuf_sz);
+		for (size_t i = 0; i < dgst_sz; i++)
+			printf("%02x", blkbuf[i]);
+		printf("\n");
+	}
+
+	free(blkbuf);
+	return ret;
+}
+
+static int sparse_list_main(void *private_data, int fd, int argc, char **argv)
+{
+	if (argc > 0) {
+		if (!strcmp(argv[0], "sha1sum"))
+			return sparse_sha1sum(private_data, fd, argc, argv);
+		return -1;
+	}
+
+	return sparse_list(private_data, fd, argc, argv);
 }
 
 static void chunk_buffer_fill(uint8_t *buffer, size_t sz_buster, void *p)
@@ -429,11 +561,11 @@ static int sparse_main(void *private_data, int argc, char **argv)
 static struct imgeditor sparse_editor = {
 	.name			= "asparse",
 	.descriptor		= "android sparse image editor",
-	.flags			= IMGEDITOR_FLAG_SINGLE_BIN,
+	.flags			= IMGEDITOR_FLAG_SINGLE_BIN | IMGEDITOR_FLAG_HIDE_INFO_WHEN_LIST,
 	.header_size		= sizeof(struct sparse_header),
 	.private_data_size	= sizeof(struct sparse_editor_private_data),
 	.detect			= sparse_detect,
-	.list			= sparse_list,
+	.list			= sparse_list_main,
 	.main			= sparse_main,
 	.unpack2fd		= sparse_unpack2fd,
 };
