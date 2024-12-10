@@ -634,6 +634,74 @@ void structure_item_print_be_u32_array(const char *print_name_fmt,
 	_structure_item_print_u32_array(print_name_fmt, name, 0, addr, sz);
 }
 
+static void _structure_item_print_n16_array(const char *print_name_fmt,
+					    const char *name,
+					    int le,
+					    const char *fmt,
+					    const void *addr, size_t sz)
+{
+	const uint16_t *p_u16 = addr;
+
+	le = structure_endian_prefer_le(le);
+
+	structure_print_name(print_name_fmt, name);
+	for (size_t i = 0; i < sz / sizeof(uint16_t); i++)
+		printf(fmt, le ? le16_to_cpu(p_u16[i]) : be16_to_cpu(p_u16[i]));
+	printf("\n");
+}
+
+static void _structure_item_print_x16_array(const char *print_name_fmt,
+					    const char *name,
+					    int le,
+					    const void *addr, size_t sz)
+{
+	_structure_item_print_n16_array(print_name_fmt,
+					name,
+					le,
+					"0x%04x ",
+					addr, sz);
+}
+
+void structure_item_print_x16_array(const char *print_name_fmt,
+				    const char *name,
+				    const void *addr, size_t sz)
+{
+	_structure_item_print_x16_array(print_name_fmt, name, 1, addr, sz);
+}
+
+void structure_item_print_be_x16_array(const char *print_name_fmt,
+				    const char *name,
+				    const void *addr, size_t sz)
+{
+	_structure_item_print_x16_array(print_name_fmt, name, 0, addr, sz);
+}
+
+static void _structure_item_print_u16_array(const char *print_name_fmt,
+					    const char *name,
+					    int le,
+					    const void *addr, size_t sz)
+{
+	_structure_item_print_n16_array(print_name_fmt,
+					name,
+					le,
+					"%u ",
+					addr, sz);
+}
+
+void structure_item_print_u16_array(const char *print_name_fmt,
+				    const char *name,
+				    const void *addr, size_t sz)
+{
+	_structure_item_print_u16_array(print_name_fmt, name, 1, addr, sz);
+}
+
+void structure_item_print_be_u16_array(const char *print_name_fmt,
+				    const char *name,
+				    const void *addr, size_t sz)
+{
+	_structure_item_print_u16_array(print_name_fmt, name, 0, addr, sz);
+}
+
 void structure_item_print_string(const char *print_name_fmt, const char *name,
 				 const void *addr, size_t sz)
 {
@@ -643,6 +711,13 @@ void structure_item_print_string(const char *print_name_fmt, const char *name,
 	for (size_t i = 0; i < sz && p[i] != '\0'; i++)
 		putchar(p[i]);
 	printf("\n");
+}
+
+void structure_item_print_hexdump(const char *print_name_fmt, const char *name,
+				  const void *addr, size_t sz)
+{
+	structure_print_name(print_name_fmt, name);
+	hexdump_indent(print_name_fmt, addr, sz, 0);
 }
 
 int structure_item_load_json_string(cJSON *json, const char *name,

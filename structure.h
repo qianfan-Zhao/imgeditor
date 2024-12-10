@@ -55,6 +55,14 @@ void structure_item_print_be_xunsigned(const char *print_name_fmt, const char *n
 				       const void *addr, size_t sz);
 void structure_item_print_x8_array(const char *print_name_fmt, const char *name,
 				   const void *addr, size_t sz);
+void structure_item_print_x16_array(const char *print_name_fmt, const char *name,
+				    const void *addr, size_t sz);
+void structure_item_print_be_x16_array(const char *print_name_fmt, const char *name,
+				       const void *addr, size_t sz);
+void structure_item_print_u16_array(const char *print_name_fmt, const char *name,
+				    const void *addr, size_t sz);
+void structure_item_print_be_u16_array(const char *print_name_fmt, const char *name,
+				       const void *addr, size_t sz);
 void structure_item_print_x32_array(const char *print_name_fmt, const char *name,
 				    const void *addr, size_t sz);
 void structure_item_print_be_x32_array(const char *print_name_fmt, const char *name,
@@ -67,6 +75,8 @@ void structure_item_print_string(const char *print_name_fmt, const char *name,
 				 const void *addr, size_t sz);
 void structure_item_print_unix_epoch(const char *print_name_fmt, const char *name,
 				     const void *addr, size_t sz);
+void structure_item_print_hexdump(const char *print_name_fmt, const char *name,
+				  const void *addr, size_t sz);
 
 void structure_print(const char *print_name_fmt, const void *base,
 		     const struct structure_item *items);

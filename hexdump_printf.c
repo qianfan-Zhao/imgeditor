@@ -10,7 +10,8 @@
 #define HEXDUMP_PER_LINE 16
 #define aligned_length(len, align)	(((len) + (align) - 1) / (align) * (align))
 
-void hexdump(const void *buf, size_t sz, unsigned long baseaddr)
+void hexdump_indent(const char *indent_fmt, const void *buf, size_t sz,
+		    unsigned long baseaddr)
 {
 	uint8_t preline[HEXDUMP_PER_LINE];
 	const uint8_t *blk = buf;
@@ -25,10 +26,14 @@ void hexdump(const void *buf, size_t sz, unsigned long baseaddr)
 		if (i != 0 && !memcmp(preline, &blk[i], sz_buster)) {
 			if (!skip) {
 				skip = 1;
+				if (indent_fmt)
+					printf(indent_fmt, "");
 				printf("*\n");
 			}
 			continue;
 		} else {
+			if (i != 0 && indent_fmt)
+				printf(indent_fmt, "");
 			skip = 0;
 		}
 
@@ -70,6 +75,12 @@ void hexdump(const void *buf, size_t sz, unsigned long baseaddr)
 		printf("\n");
 	}
 
+	if (indent_fmt)
+		printf(indent_fmt, "");
 	printf("%08lx\n", baseaddr + aligned_length(sz, HEXDUMP_PER_LINE));
 }
 
+void hexdump(const void *buf, size_t sz, unsigned long baseaddr)
+{
+	hexdump_indent(NULL, buf, sz, baseaddr);
+}

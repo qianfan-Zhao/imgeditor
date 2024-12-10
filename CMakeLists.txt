@@ -131,7 +131,7 @@ if (ENABLE_FDT OR ENABLE_ALL)
 endif()
 
 if (ENABLE_FS OR ENABLE_ALL)
-        list(APPEND src fs/ext2.c fs/ubi.c fs/squashfs.c)
+        list(APPEND src fs/ext2.c fs/ubi.c fs/squashfs.c fs/f2fs.c)
 
         list(APPEND tests
                 fs/ext4/test.sh
