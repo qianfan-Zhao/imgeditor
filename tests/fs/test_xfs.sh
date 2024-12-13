@@ -14,7 +14,7 @@ source "${CMAKE_SOURCE_DIR}/tests/common.sh"
 
 if [ "$EUID" -ne 0 ]; then
     echo "This test must be run as root"
-    exit 0
+    return 0
 fi
 
 # assert_direq(dir1, dir2, [fail_msg])
@@ -41,7 +41,7 @@ function gen_xfs() {
 
     mkdir ${dir}.mount
     mount -o loop ${dir}.xfs ${dir}.mount || return $?
-    cp ${dir}/* ${dir}.mount
+    cp -r ${dir}/* ${dir}.mount
     umount ${dir}.mount
 }
 
@@ -51,8 +51,9 @@ function imgeditor_unpack_test() {
     local unit=$1 img_size=$2
     local dir=${TEST_TMPDIR}/${unit}
 
+    # 16M划分为一个AG, 64M能划分多个AG
     if [ -z "$img_size" ] ; then
-        img_size=16M
+        img_size=64M
     fi
 
     # create the basic directory and generate ext image
@@ -60,6 +61,15 @@ function imgeditor_unpack_test() {
     ${unit} ${dir}
 
     gen_xfs ${dir} ${img_size} || exit $?
+    if [ -n "${SUDO_UID}" ] && [ -n "${SUDO_GID}" ] ; then
+        # recovery the permission
+        chown -R ${SUDO_UID}:${SUDO_GID} ${TEST_TMPDIR}
+    fi
+
+    # test sparse function
+    assert_imgeditor_successful -v ${dir}.xfs -- sparse ${dir}.xfs.simg || exit $?
+    simg2img ${dir}.xfs.simg ${dir}.xfs.img || exit $?
+    assert_fileeq ${dir}.xfs.img ${dir}.xfs || exit $?
 }
 
 function simple_abc() {
@@ -92,7 +102,7 @@ function file_unaligned() {
         dd if=/dev/urandom of=a bs=34 count=1
         dd if=/dev/urandom of=b bs=4097 count=1
         dd if=/dev/urandom of=c bs=8193 count=1
-        dd if=/dev/urandom of=c bs=16385 count=1
+        dd if=/dev/urandom of=d bs=16385 count=1
     )
 }
 

@@ -21,6 +21,7 @@ int bitmask_write(struct bitmask *b, size_t bit_idx, int v);
 int bitmask_set(struct bitmask *b, size_t bit_idx);
 int bitmask_set_bits(struct bitmask *b, size_t from_bit, size_t bits);
 int bitmask_unset(struct bitmask *b, size_t bit_idx);
+int bitmask_not(struct bitmask *b);
 int bitmask_memset(struct bitmask *b, uint8_t val);
 int bitmask_memcpy(struct bitmask *b, const void *src, size_t src_bytes);
 int bitmask_memcpy_lsbfirst(struct bitmask *b, const void *src, size_t src_bytes);

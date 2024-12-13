@@ -44,6 +44,17 @@ int bitmask_memcpy(struct bitmask *b, const void *src, size_t src_bytes)
 	return 0;
 }
 
+int bitmask_not(struct bitmask *b)
+{
+	if (!b)
+		return -1;
+
+	for (size_t i = 0; i < b->bufsize; i++)
+		b->buffer[i] ^= 0xff;
+
+	return 0;
+}
+
 static inline uint8_t reverse8(uint8_t x)
 {
 	x = (((x & 0xaa) >> 1) | ((x & 0x55) << 1));
