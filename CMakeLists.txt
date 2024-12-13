@@ -140,6 +140,7 @@ if (ENABLE_FS OR ENABLE_ALL)
                 fs/ubi_none/test.sh
                 fs/squashfs_nocomp/test.sh
                 fs/f2fs/test.sh
+                fs/xfs/test.sh
         )
 
         require_program(mkfs.ext2)
