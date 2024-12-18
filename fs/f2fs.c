@@ -805,6 +805,12 @@ static int f2fs_do_block_as_inode(struct f2fs_editor *f2fs, void *blk)
 	return 0;
 }
 
+static inline long pointsub(const void *a, const void *b)
+{
+	/* force convert to long to compat both 64bit and 32bit platform */
+	return (long)(a - b);
+}
+
 static int f2fs_do_block_as_dentry(struct f2fs_editor *f2fs, void *blk)
 {
 	struct f2fs_dentry_block *dblk = blk;
@@ -851,7 +857,7 @@ static int f2fs_do_block_as_dentry(struct f2fs_editor *f2fs, void *blk)
 		if (dentry->file_type >= F2FS_FT_MAX
 		    || le16_to_cpu(dentry->name_len) > F2FS_NAME_LEN) {
 			fprintf(stderr, "Error: bad dentry at 0x04%lx\n",
-				(void *)dentry - blk);
+				pointsub(dentry, blk));
 			structure_print(PRINT_LEVEL0, dentry, st_f2fs_dir_entry);
 			ret = -1;
 			break;
@@ -1215,7 +1221,7 @@ static int _foreach_dirent(struct f2fs_editor *f2fs, uint32_t ino,
 			if (dentry->file_type >= F2FS_FT_MAX
 			|| le16_to_cpu(dentry->name_len) > F2FS_NAME_LEN) {
 				fprintf(stderr, "Error: bad dentry at 0x04%lx\n",
-					(void *)dentry - (void *)dblk);
+					pointsub(dentry, dblk));
 				structure_print(PRINT_LEVEL0, dentry, st_f2fs_dir_entry);
 				ret = -1;
 				goto done;
