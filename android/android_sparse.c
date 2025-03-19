@@ -34,6 +34,7 @@ static const struct structure_item st_sparse_header[] = {
 	STRUCTURE_ITEM(struct sparse_header, chunk_hdr_sz,	structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct sparse_header, blk_sz,		structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct sparse_header, total_blks,	structure_item_print_unsigned),
+	STRUCTURE_ITEM(struct sparse_header, total_chunks,	structure_item_print_unsigned),
 	STRUCTURE_ITEM(struct sparse_header, image_checksum,	structure_item_print_xunsigned),
 	STRUCTURE_ITEM_END(),
 };
@@ -284,7 +285,8 @@ static int sparse_list(void *private_data, int fd, int argc, char **argv)
 		lseek(fd, offset, SEEK_SET);
 		n = read(fd, &chunk, sizeof(chunk));
 		if (n != (int)sizeof(chunk)) {
-			fprintf(stderr, "Error: read chunk #%zu failed\n", i);
+			fprintf(stderr, "Error: read chunk #%zu at %zu failed\n",
+				i, offset);
 			return -1;
 		}
 
@@ -494,7 +496,8 @@ static int sparse_unpack2fd(void *private_data, int fd, int fdout, int argc, cha
 		lseek(fd, offset_in, SEEK_SET);
 		n = read(fd, &chunk, sizeof(chunk));
 		if (n != (int)sizeof(chunk)) {
-			fprintf(stderr, "Error: read chunk #%zu failed\n", i);
+			fprintf(stderr, "Error: read chunk #%zu at %zu failed\n",
+				i, offset_in);
 			return -1;
 		}
 
