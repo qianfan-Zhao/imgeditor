@@ -40,6 +40,8 @@ typedef int (*exini_prop_handler_cb_t)(struct exini_section *section,
 
 #define EXINI_QUIRK_ANONYMOUS_SECTION	(1 << 0)
 #define EXINI_QUIRK_DTBOCFG		(1 << 1)
+#define EXINI_QUIRK_KEY_HAS_SPACE	(1 << 2)
+#define EXINI_QUIRK_VALUE_HAS_SPACE	(1 << 3)
 
 struct exini {
 	struct list_head		sections;

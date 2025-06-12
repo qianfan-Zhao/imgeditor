@@ -227,13 +227,14 @@ static int exini_load_property(struct exini *ini, struct exini_section *section,
 	string_remove_eol_space(value);
 
 	/* both the key and value can not container space */
-	if (string_count_space(key) > 0) {
+	if (!(ini->quirks & EXINI_QUIRK_KEY_HAS_SPACE) && string_count_space(key) > 0) {
 		fprintf(stderr, "Error: #%d key property has space\n",
 			linenum);
 		return -1;
 	}
 
-	if (value[0] != '"' && string_count_space(value) > 0) {
+	if (!(ini->quirks & EXINI_QUIRK_VALUE_HAS_SPACE)
+		&& value[0] != '"' && string_count_space(value) > 0) {
 		fprintf(stderr, "Error: #%d property value has space\n",
 			linenum);
 		return -1;
