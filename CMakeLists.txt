@@ -207,6 +207,7 @@ set(IMGEDITOR_HEADERS
         "structure.h"
         "list_head.h"
         "exini.h"
+        "bitmask.h"
         "libs/cJSON/cJSON.h"
         "libs/libxopt/libxopt.h"
         "libs/hash/hash_compatible.h"

@@ -40,7 +40,21 @@ int bitmask_memcpy(struct bitmask *b, const void *src, size_t src_bytes)
 	if (!b || src_bytes > b->bufsize)
 		return -1;
 
-	memcpy(b->buffer, src, src_bytes);
+	if (src)
+		memcpy(b->buffer, src, src_bytes);
+
+	return 0;
+}
+
+int bitmask_copyto(struct bitmask *b, void *dst, size_t dst_bytes)
+{
+	if (!b)
+		return -1;
+
+	if (dst_bytes > b->bufsize)
+		dst_bytes = b->bufsize;
+
+	memcpy(dst, b->buffer, dst_bytes);
 	return 0;
 }
 
@@ -66,6 +80,7 @@ static inline uint8_t reverse8(uint8_t x)
 
 int bitmask_memcpy_lsbfirst(struct bitmask *b, const void *src, size_t src_bytes)
 {
+	/* src can be null that we just reverse the bits */
 	int ret = bitmask_memcpy(b, src, src_bytes);
 
 	if (ret < 0)
@@ -73,6 +88,20 @@ int bitmask_memcpy_lsbfirst(struct bitmask *b, const void *src, size_t src_bytes
 
 	for (size_t i = 0; i < src_bytes; i++)
 		b->buffer[i] = reverse8(b->buffer[i]);
+
+	return 0;
+}
+
+int bitmask_copyto_lsbfirst(struct bitmask *b, void *dst, size_t dst_bytes)
+{
+	if (!b)
+		return -1;
+
+	if (dst_bytes > b->bufsize)
+		dst_bytes = b->bufsize;
+
+	for (size_t i = 0; i < dst_bytes; i++)
+		((uint8_t *)dst)[i] = reverse8(b->buffer[i]);
 
 	return 0;
 }
